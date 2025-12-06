@@ -9,7 +9,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("Modern Robotics Simulator (PySide6)")
+        self.setWindowTitle("PUMA 560 Simulator (Degrees)")
         self.setGeometry(100, 100, 1400, 900)
 
         main_widget = QtWidgets.QWidget()
@@ -30,15 +30,13 @@ class MainWindow(QtWidgets.QMainWindow):
         
         main_layout.addWidget(self.tabs)
         
-        # --- Populate Forward Dynamics Tab ---
+        # --- Populate Tabs ---
         self.setup_fd_tab()
-
-        # --- Populate Inverse Dynamics Tab ---
         self.setup_id_tab()
 
-        # --- Populate Reserved Tab ---
+        # Reserved Tab
         res_layout = QtWidgets.QVBoxLayout(self.tab_res)
-        res_label = QtWidgets.QLabel("This tab is reserved for future use.")
+        res_label = QtWidgets.QLabel("Reserved for future features.")
         res_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         res_layout.addWidget(res_label)
 
@@ -55,32 +53,29 @@ class MainWindow(QtWidgets.QMainWindow):
         main_layout.addWidget(plot_widget)
 
     def _create_joint_input_group(self, title, defaults):
-        """Helper function to create a group box with 6 joint inputs."""
         group_box = QtWidgets.QGroupBox(title)
         form_layout = QtWidgets.QFormLayout(group_box)
         entries = []
         for i in range(6):
             entry = QtWidgets.QLineEdit(str(defaults[i]))
-            entry.setValidator(QtGui.QDoubleValidator()) # Allow only numbers
+            entry.setValidator(QtGui.QDoubleValidator())
             form_layout.addRow(f"Joint {i+1}:", entry)
             entries.append(entry)
         return group_box, entries
 
     def _get_joint_values(self, entries):
-        """Helper function to get float values from 6 entries."""
         return [float(entry.text()) for entry in entries]
 
     def setup_fd_tab(self):
-        """Populates the Forward Dynamics tab with controls."""
         layout = QtWidgets.QVBoxLayout(self.tab_fd)
         
         # Initial Position (q0)
         q0_box, self.fd_q0_entries = self._create_joint_input_group(
-            "Initial Position (q0) [rad]", [0.0]*6)
+            "Initial Position (q0) [Deg]", [0.0]*6)
         
         # Initial Velocity (qd0)
         qd0_box, self.fd_qd0_entries = self._create_joint_input_group(
-            "Initial Velocity (qd0) [rad/s]", [0.0]*6)
+            "Initial Velocity (qd0) [Deg/s]", [0.0]*6)
             
         # Applied Torques (tau)
         tau_box, self.fd_tau_entries = self._create_joint_input_group(
@@ -98,10 +93,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Run Button
         self.fd_run_button = QtWidgets.QPushButton("Run Forward Dynamics")
-        self.fd_run_button.setStyleSheet("padding: 10px; font-size: 14px; font-weight: bold;")
+        self.fd_run_button.setStyleSheet("padding: 10px; font-weight: bold;")
         self.fd_run_button.clicked.connect(self.on_run_fd)
 
-        # Add all widgets to the tab layout
+        # Scroll Area
         scroll = QtWidgets.QScrollArea()
         scroll.setWidgetResizable(True)
         scroll_content = QtWidgets.QWidget()
@@ -117,16 +112,15 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(scroll)
 
     def setup_id_tab(self):
-        """Populates the Inverse Dynamics tab with controls."""
         layout = QtWidgets.QVBoxLayout(self.tab_id)
 
-        # Initial Position
+        # Initial Values
         q0_box, self.id_q0_entries = self._create_joint_input_group(
-            "Initial Position (q0) [degrees]", [0.0]*6)
+            "Initial Values (q_init) [Deg]", [0.0]*6)
 
-        # Target Position
+        # Target Values
         q_target_box, self.id_q_target_entries = self._create_joint_input_group(
-            "Target Position (q_target) [degrees]", [45, 90, 90, 30, 0, 0])
+            "Target Values (q_target) [Deg]", [45, 90, 90, 30, 0, 0])
 
         # Simulation Parameters
         params_box = QtWidgets.QGroupBox("Simulation Parameters")
@@ -137,76 +131,102 @@ class MainWindow(QtWidgets.QMainWindow):
         self.id_dt_entry.setValidator(QtGui.QDoubleValidator(0.0001, 1.0, 4))
         params_layout.addRow("Duration (s):", self.id_duration_entry)
         params_layout.addRow("Time Step (dt):", self.id_dt_entry)
+        
+        # Monitor Toggles (Checkboxes)
+        plot_box = QtWidgets.QGroupBox("Monitor Variables")
+        plot_layout = QtWidgets.QHBoxLayout(plot_box)
+        
+        self.id_check_tau = QtWidgets.QCheckBox("tau")
+        self.id_check_q = QtWidgets.QCheckBox("q")
+        self.id_check_qd = QtWidgets.QCheckBox("qd")
+        self.id_check_qdd = QtWidgets.QCheckBox("qdd")
+        
+        # Set default checked
+        self.id_check_tau.setChecked(True)
+        
+        plot_layout.addWidget(self.id_check_tau)
+        plot_layout.addWidget(self.id_check_q)
+        plot_layout.addWidget(self.id_check_qd)
+        plot_layout.addWidget(self.id_check_qdd)
 
         # Run Button
         self.id_run_button = QtWidgets.QPushButton("Run Inverse Dynamics")
-        self.id_run_button.setStyleSheet("padding: 10px; font-size: 14px; font-weight: bold;")
+        self.id_run_button.setStyleSheet("padding: 10px; font-weight: bold;")
         self.id_run_button.clicked.connect(self.on_run_id)
+
+        # Scroll Area
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll_content = QtWidgets.QWidget()
+        scroll_layout = QtWidgets.QVBoxLayout(scroll_content)
+        scroll_layout.addWidget(q0_box)
+        scroll_layout.addWidget(q_target_box)
+        scroll_layout.addWidget(params_box)
+        scroll_layout.addWidget(plot_box)
+        scroll_layout.addWidget(self.id_run_button)
+        scroll_layout.addStretch()
+        scroll.setWidget(scroll_content)
         
-        layout.addWidget(q0_box)
-        layout.addWidget(q_target_box)
-        layout.addWidget(params_box)
-        layout.addWidget(self.id_run_button)
-        layout.addStretch()
+        layout.addWidget(scroll)
 
     def on_run_fd(self):
-        """Called when the 'Run Forward Dynamics' button is clicked."""
         self.fd_run_button.setText("Running...")
         self.fd_run_button.setEnabled(False)
         QtCore.QCoreApplication.processEvents()
 
         try:
-            # 1. Get all values from the GUI
             q0 = self._get_joint_values(self.fd_q0_entries)
             qd0 = self._get_joint_values(self.fd_qd0_entries)
             torques = self._get_joint_values(self.fd_tau_entries)
             duration = float(self.fd_duration_entry.text())
             dt = float(self.fd_dt_entry.text())
             
-            # 2. Run simulation
             (t, q, qd, qdd) = run_forward_dynamics(torques, duration, dt, q0, qd0)
-            
-            # 3. Plot results
             self.plot_canvas.plot_fd_results(t, q, qd, qdd)
 
         except Exception as e:
             self.show_error_message("Simulation Error", f"An error occurred:\n{e}")
         finally:
             self.fd_run_button.setText("Run Forward Dynamics")
-        self.fd_run_button.setEnabled(True)
+            self.fd_run_button.setEnabled(True)
 
     def on_run_id(self):
-        """Called when the 'Run Inverse Dynamics' button is clicked."""
         self.id_run_button.setText("Running...")
         self.id_run_button.setEnabled(False)
         QtCore.QCoreApplication.processEvents()
         
         try:
-            # 1. Get all values from the GUI
+            q_init_deg = self._get_joint_values(self.id_q0_entries)
             q_target_deg = self._get_joint_values(self.id_q_target_entries)
             duration = float(self.id_duration_entry.text())
             dt = float(self.id_dt_entry.text())
             
-            # 2. Run simulation
-            (t, q, qd, qdd, torques) = run_inverse_dynamics(q_target_deg, duration, dt)
+            # Gather checked variables
+            active_modes = []
+            if self.id_check_tau.isChecked(): active_modes.append("tau")
+            if self.id_check_q.isChecked():   active_modes.append("q")
+            if self.id_check_qd.isChecked():  active_modes.append("qd")
+            if self.id_check_qdd.isChecked(): active_modes.append("qdd")
             
-            # 3. Plot results
-            self.plot_canvas.plot_id_results(t, q, torques)
+            if not active_modes:
+                self.show_error_message("Plot Error", "Please select at least one variable to monitor.")
+                return
+
+            (t, q, qd, qdd, torques) = run_inverse_dynamics(q_init_deg, q_target_deg, duration, dt)
+            self.plot_canvas.plot_id_results(t, q, qd, qdd, torques, active_modes)
 
         except Exception as e:
             self.show_error_message("Simulation Error", f"An error occurred:\n{e}")
         finally:
             self.id_run_button.setText("Run Inverse Dynamics")
-        self.id_run_button.setEnabled(True)
-    
+            self.id_run_button.setEnabled(True)
+
     def show_error_message(self, title, message):
-        """Displays a modal error message box."""
         msg_box = QtWidgets.QMessageBox(self)
         msg_box.setIcon(QtWidgets.QMessageBox.Icon.Critical)
         msg_box.setWindowTitle(title)
         msg_box.setText(message)
         msg_box.exec()
-
 
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
