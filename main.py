@@ -28,10 +28,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tab_fd = QtWidgets.QWidget()
         self.tab_id = QtWidgets.QWidget()
         self.tab_pc = QtWidgets.QWidget()
+        self.tab_tuning = QtWidgets.QWidget()
 
         self.tabs.addTab(self.tab_fd, "Forward Dynamics")
         self.tabs.addTab(self.tab_id, "Inverse Dynamics")
         self.tabs.addTab(self.tab_pc, "PID Controller")
+        self.tabs.addTab(self.tab_tuning, "PID Tuning")
 
         main_layout.addWidget(self.tabs)
 
@@ -39,6 +41,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setup_fd_tab()
         self.setup_id_tab()
         self.setup_pc_tab()
+        self.setup_tuning_tab()
 
         # --- Right-side Plotting Area ---
         plot_widget = QtWidgets.QWidget()
@@ -212,6 +215,42 @@ class MainWindow(QtWidgets.QMainWindow):
         scroll.setWidget(scroll_content)
         layout.addWidget(scroll)
 
+    def setup_tuning_tab(self):
+        layout = QtWidgets.QVBoxLayout(self.tab_tuning)
+
+        # Description Label
+        desc = QtWidgets.QLabel(
+            "Demonstrate the effect of changing PID gains on Joint 2.\n"
+            "Runs 3 experiments and plots the comparison."
+        )
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
+
+        # Radio Buttons Group
+        self.tuning_group = QtWidgets.QButtonGroup(self)
+        
+        self.rb_kp = QtWidgets.QRadioButton("Effect of Kp (Proportional)")
+        self.rb_ki = QtWidgets.QRadioButton("Effect of Ki (Integral)")
+        self.rb_kd = QtWidgets.QRadioButton("Effect of Kd (Derivative)")
+        
+        self.rb_kp.setChecked(True)
+
+        self.tuning_group.addButton(self.rb_kp)
+        self.tuning_group.addButton(self.rb_ki)
+        self.tuning_group.addButton(self.rb_kd)
+
+        layout.addWidget(self.rb_kp)
+        layout.addWidget(self.rb_ki)
+        layout.addWidget(self.rb_kd)
+
+        # Run Button
+        self.tuning_run_button = QtWidgets.QPushButton("Run Tuning Demo")
+        self.tuning_run_button.setStyleSheet("padding: 10px; font-weight: bold;")
+        self.tuning_run_button.clicked.connect(self.on_run_tuning)
+        layout.addWidget(self.tuning_run_button)
+
+        layout.addStretch()
+
     def on_run_fd(self):
         self.fd_run_button.setText("Running...")
         self.fd_run_button.setEnabled(False)
@@ -294,7 +333,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 pid_values.append(PIDValue(Kp=f64(Kp), Ki=f64(Ki), Kd=f64(Kd)))
 
             # 3) Run simulation
-            t_steps, q_values, u_values = run_pid_controller(
+            (
+                t_steps,
+                q_values,
+                error_values,
+                u_values,
+                torque_values,
+            ) = run_pid_controller(
                 setpoints=setpoints_rad,
                 pid_values=pid_values,
             )
@@ -303,7 +348,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.plot_canvas.plot_pc_results(
                 t_steps=t_steps,
                 q_values=q_values,
+                error_values=error_values,
                 u_values=u_values,
+                torque_values=torque_values,
                 setpoints=setpoints_rad,
             )
 
@@ -312,6 +359,77 @@ class MainWindow(QtWidgets.QMainWindow):
         finally:
             self.pc_run_button.setText("Run PID Controller")
             self.pc_run_button.setEnabled(True)
+
+    def on_run_tuning(self):
+        self.tuning_run_button.setText("Running Experiments...")
+        self.tuning_run_button.setEnabled(False)
+        QtCore.QCoreApplication.processEvents()
+
+        try:
+            # Setup for Joint 2 (index 1) experiment
+            joint_idx = 1
+            setpoints_rad = np.zeros(6)
+            setpoints_rad[joint_idx] = np.deg2rad(45.0) # Target 45 degrees
+
+            experiments = []
+            title = ""
+
+            # Define gains based on selection
+            if self.rb_kp.isChecked():
+                title = "Effect of Proportional Gain (Kp)"
+                # (Kp, Ki, Kd) tuples
+                configs = [
+                    (10, 0, 0, "Kp=10 (Sluggish/Error)"),
+                    (50, 0, 0, "Kp=50 (Better)"),
+                    (200, 0, 0, "Kp=200 (Overshoot)"),
+                ]
+            elif self.rb_ki.isChecked():
+                title = "Effect of Integral Gain (Ki)"
+                # Fix Kp=20, vary Ki
+                configs = [
+                    (20, 0, 0, "Ki=0 (Steady Error)"),
+                    (20, 50, 0, "Ki=50 (Corrects Error)"),
+                    (20, 100, 0, "Ki=100 (Oscillations)"),
+                ]
+            else: # Kd effect
+                title = "Effect of Derivative Gain (Kd)"
+                # High Kp=200, vary Kd
+                configs = [
+                    (200, 0, 0, "Kd=0 (Overshoot)"),
+                    (200, 0, 10, "Kd=10 (Damped)"),
+                    (200, 0, 50, "Kd=50 (Overdamped)"),
+                ]
+
+            # Run experiments
+            for kp, ki, kd, label in configs:
+                # Build PID values list
+                pid_values = []
+                for i in range(6):
+                    if i == joint_idx:
+                        pid_values.append(PIDValue(Kp=f64(kp), Ki=f64(ki), Kd=f64(kd)))
+                    else:
+                        # Stiff defaults for others
+                        pid_values.append(PIDValue(Kp=f64(100), Ki=f64(0), Kd=f64(10)))
+
+                # Run Sim (shorter duration for interactive feel)
+                t_steps, q_values, _, _, _ = run_pid_controller(
+                    setpoints_rad, pid_values, duration=3.0, steps=300
+                )
+                
+                experiments.append({
+                    "t": t_steps,
+                    "q": q_values[joint_idx], # Extract Joint 2
+                    "label": label
+                })
+
+            # Plot Results
+            self.plot_canvas.plot_tuning_results(experiments, title)
+
+        except Exception as e:
+            self.show_error_message("Tuning Demo Error", f"An error occurred:\n{e}")
+        finally:
+            self.tuning_run_button.setText("Run Tuning Demo")
+            self.tuning_run_button.setEnabled(True)
 
     def show_error_message(self, title, message):
         msg_box = QtWidgets.QMessageBox(self)

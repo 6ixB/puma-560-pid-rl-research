@@ -30,10 +30,16 @@ class PIDController:
         derivative = (error - self.prev_error) / dt
         derivative = max(min(derivative, 1e6), -1e6)
         self.prev_error = error
-        return (self.Kp * error) + (self.Ki * self.integral) + (self.Kd * derivative)
+        output = (self.Kp * error) + (self.Ki * self.integral) + (self.Kd * derivative)
+        return output, error
 
 
-def run_pid_controller(setpoints: NDArray[f64], pid_values: list[PIDValue]):
+def run_pid_controller(
+    setpoints: NDArray[f64],
+    pid_values: list[PIDValue],
+    duration: float = 10.0,
+    steps: int = 1000,
+):
     robot = models.DH.Puma560()
 
     q: NDArray[f64] = np.zeros(6)
@@ -49,11 +55,13 @@ def run_pid_controller(setpoints: NDArray[f64], pid_values: list[PIDValue]):
         for i in range(len(setpoints))
     ]
 
-    t_steps: NDArray[f64] = np.linspace(0, 10, 1000)
-    dt: f64 = t_steps[1] - t_steps[0]
+    t_steps: NDArray[f64] = np.linspace(0, duration, steps)
+    dt: f64 = f64(duration / steps)
 
     q_values: list[list[f64]] = [[] for _ in range(6)]
+    error_values: list[list[f64]] = [[] for _ in range(6)]
     u_values: list[list[f64]] = [[] for _ in range(6)]
+    torque_values: list[list[f64]] = [[] for _ in range(6)]
 
     # ---------------- Simulation Loop ----------------
     for _ in t_steps:
@@ -61,7 +69,11 @@ def run_pid_controller(setpoints: NDArray[f64], pid_values: list[PIDValue]):
         C: NDArray[f64] = robot.coriolis(q, qd)  # pyright: ignore[reportAttributeAccessIssue]
         G: NDArray[f64] = robot.gravload(q)  # pyright: ignore[reportAttributeAccessIssue]
 
-        tau_pid: NDArray[f64] = np.array([pids[i].update(q[i], dt) for i in range(6)])
+        pid_outputs = [pids[i].update(q[i], dt) for i in range(6)]
+        
+        # Unpack control signals (u) and errors
+        tau_pid: NDArray[f64] = np.array([out[0] for out in pid_outputs])
+        errors: list[f64] = [out[1] for out in pid_outputs]
 
         tau_vector: NDArray[f64] = tau_pid
         # tau_vector: NDArray[f64] = tau_pid + G
@@ -73,9 +85,11 @@ def run_pid_controller(setpoints: NDArray[f64], pid_values: list[PIDValue]):
 
         for i in range(6):
             q_values[i].append(np.rad2deg(q[i]))
-            u_values[i].append(tau_vector[i])
+            error_values[i].append(errors[i])
+            u_values[i].append(tau_pid[i])
+            torque_values[i].append(tau_vector[i])
 
-    return t_steps, q_values, u_values
+    return t_steps, q_values, error_values, u_values, torque_values
 
 
 def plot_pid_controller_output(t_steps, q_values, u_values, setpoints):
