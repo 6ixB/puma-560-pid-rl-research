@@ -5,7 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "matplotlib>=3.10.7",
+    "matplotlib<3.8",
     "numpy<2",
     "pyside6>=6.10.1",
     "roboticstoolbox-python>=1.1.1",

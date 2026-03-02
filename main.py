@@ -8,8 +8,9 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from canvas import MplCanvas
 from dynamics import run_forward_dynamics, run_inverse_dynamics
 from pid_controller import PIDValue, run_pid_controller
-
-
+import roboticstoolbox as rtb
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
@@ -44,16 +45,73 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setup_tuning_tab()
 
         # --- Right-side Plotting Area ---
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+
+        # Top area: 2D Plots
         plot_widget = QtWidgets.QWidget()
         plot_layout = QtWidgets.QVBoxLayout(plot_widget)
 
-        self.plot_canvas = MplCanvas(self, width=8, height=10, dpi=100)
+        self.plot_canvas = MplCanvas(self, width=8, height=6, dpi=100)
         toolbar = NavigationToolbar(self.plot_canvas, self)
 
         plot_layout.addWidget(toolbar)
         plot_layout.addWidget(self.plot_canvas)
+        splitter.addWidget(plot_widget)
 
-        main_layout.addWidget(plot_widget)
+        # Bottom area: 3D Robot View
+        robot_widget = QtWidgets.QWidget()
+        robot_layout = QtWidgets.QVBoxLayout(robot_widget)
+        
+        # Create a matplotlib figure for RTB
+        self.fig_3d = Figure(figsize=(8, 4), dpi=100)
+        self.canvas_3d = FigureCanvas(self.fig_3d)
+        
+        # Mock the manager for roboticstoolbox compatibility
+        class DummyManager:
+            def set_window_title(self, title):
+                pass
+        self.canvas_3d.manager = DummyManager()
+        self.fig_3d.number = 1
+        
+        robot_layout.addWidget(self.canvas_3d)
+        splitter.addWidget(robot_widget)
+
+        main_layout.addWidget(splitter)
+        
+        # Initialize Robot
+        self.robot = rtb.models.DH.Puma560()
+        # Setup the plot via plotting method but passing False to block ensures we don't freeze
+        self._init_3d_plot()
+
+    def _init_3d_plot(self):
+        # Initial robot pose
+        self.env = self.robot.plot([0, 0, 0, 0, 0, 0], backend='pyplot', fig=self.fig_3d, block=False)
+        self.canvas_3d.draw()
+
+    def animate_3d(self, t, q_trajectory):
+        """Helper to animate the robot 3D view given a trajectory"""
+        if q_trajectory is None or len(q_trajectory) == 0:
+            return
+            
+        # For responsiveness, downsample the trajectory if it's too fine,
+        # or use a QTimer to animate without blocking the GUI.
+        # Here we perform a simple loop with processEvents
+        
+        # Decide downsampling to aim for roughly ~30fps visual if simulation is 100Hz
+        dt = t[1] - t[0] if len(t) > 1 else 0.01
+        target_fps = 30.0
+        step_sz = max(1, int(1.0 / (target_fps * dt)))
+        
+        for i in range(0, len(q_trajectory), step_sz):
+            self.robot.q = np.deg2rad(q_trajectory[i])
+            try:
+                # The returned env from plot() handles updates
+                if self.env:
+                    self.env.step(0.01)
+                self.canvas_3d.draw_idle()
+            except Exception as e:
+                print(f"Animation step error: {e}")
+            QtCore.QCoreApplication.processEvents()
 
     def _create_joint_input_group(self, title, defaults):
         group_box = QtWidgets.QGroupBox(title)
@@ -265,6 +323,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
             (t, q, qd, qdd) = run_forward_dynamics(torques, duration, dt, q0, qd0)
             self.plot_canvas.plot_fd_results(t, q, qd, qdd)
+            self.animate_3d(t, q)
 
         except Exception as e:
             self.show_error_message("Simulation Error", f"An error occurred:\n{e}")
@@ -304,6 +363,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 q_init_deg, q_target_deg, duration, dt
             )
             self.plot_canvas.plot_id_results(t, q, qd, qdd, torques, active_modes)
+            self.animate_3d(t, q)
 
         except Exception as e:
             self.show_error_message("Simulation Error", f"An error occurred:\n{e}")
@@ -353,6 +413,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 torque_values=torque_values,
                 setpoints=setpoints_rad,
             )
+            # q_values from pc is shape (6, N), animate_3d expects (N, 6)
+            q_traj = np.array(q_values).T
+            self.animate_3d(t_steps, q_traj)
 
         except Exception as e:
             self.show_error_message("PID Controller Error", f"An error occurred:\n{e}")
@@ -415,6 +478,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 t_steps, q_values, _, _, _ = run_pid_controller(
                     setpoints_rad, pid_values, duration=3.0, steps=300
                 )
+                # q_values shape is (6, N), transform it for 3D animation
+                q_traj = np.array(q_values).T
                 
                 experiments.append({
                     "t": t_steps,
@@ -424,6 +489,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
             # Plot Results
             self.plot_canvas.plot_tuning_results(experiments, title)
+            # Animate the final experiment run as a representation
+            if experiments:
+                self.animate_3d(t_steps, q_traj)
 
         except Exception as e:
             self.show_error_message("Tuning Demo Error", f"An error occurred:\n{e}")
