@@ -49,7 +49,10 @@ class MplCanvas(FigureCanvas):
         self.fig.clear()
         self.fig.suptitle(suptitle, fontsize=12, weight="bold")
         axs = self.fig.subplots(rows, cols, sharex=True)
-        self.axs = axs.flatten()
+        if not isinstance(axs, np.ndarray):
+            self.axs = [axs]
+        else:
+            self.axs = axs.flatten()
         return self.axs
 
     def plot_fd_results(self, t, q, qd, qdd):
@@ -113,91 +116,82 @@ class MplCanvas(FigureCanvas):
         self.draw()
 
     def plot_pc_results(
-        self, t_steps, q_values, error_values, u_values, torque_values, setpoints
+        self, t_steps, q_values, error_values, u_values, torque_values, p_values, i_values, d_values, setpoints, active_joints, active_vars
     ):
-        """Plots PID Controller results: Angle, Error, Control, Torque per joint."""
-        # Layout: 6 Rows x 4 Cols
-        # Cols: Angle | Error | Control u(k) | Torque
-        self._reset_figure(6, 4, "PID Controller: Angle | Error | Control | Torque")
+        """Plots PID Controller results: Overlay of selected variables for active joints, separated by joint."""
+        n_joints = len(active_joints)
+        if n_joints == 0:
+            self._reset_figure(1, 1, "PID Controller: No Joints Selected")
+            self.draw()
+            return
+            
+        self._reset_figure(n_joints, 1, "PID Controller: Variables per Joint")
 
-        for j in range(6):
-            # Indices for the 4 columns in the j-th row
-            idx_angle = j * 4
-            idx_error = j * 4 + 1
-            idx_ctrl = j * 4 + 2
-            idx_torque = j * 4 + 3
+        # Color map for variables
+        colors = {
+            "Angle": "#1f77b4",
+            "Setpoint": "#d62728",
+            "Error": "#ff7f0e",
+            "U(k)": "#9467bd",
+            "Torque(Nm)": "#2ca02c",
+            "P": "#e377c2",
+            "I": "#8c564b",
+            "D": "#17becf"
+        }
 
-            ax_angle = self.axs[idx_angle]
-            ax_error = self.axs[idx_error]
-            ax_ctrl = self.axs[idx_ctrl]
-            ax_torque = self.axs[idx_torque]
+        # Instead of linestyles by joint, we use solid lines for each individual joint graph
+        ls = "-"
 
-            # --- 1. Angle Plot ---
-            ax_angle.plot(
-                t_steps,
-                q_values[j],
-                label=f"J{j + 1} Angle",
-                color="#1f77b4",
-                linewidth=1.5,
-            )
-            # Setpoint line
-            sp_deg = np.rad2deg(setpoints[j])
-            ax_angle.axhline(
-                sp_deg,
-                linestyle="--",
-                color="#d62728",
-                label=f"Ref {sp_deg:.1f}",
-                linewidth=1.2,
-                alpha=0.8,
-            )
-            ax_angle.set_ylabel(f"J{j + 1} (deg)", fontsize=9)
-            ax_angle.legend(loc="upper right", fontsize="x-small")
-            ax_angle.grid(True, linestyle="--", alpha=0.7)
+        for idx, j in enumerate(active_joints):
+            ax = self.axs[idx]
+            has_plotted = False
 
-            # --- 2. Error Plot ---
-            ax_error.plot(
-                t_steps,
-                error_values[j],
-                label="Error",
-                color="#ff7f0e",
-                linewidth=1.5,
-            )
-            ax_error.set_ylabel("Err", fontsize=9)
-            ax_error.legend(loc="upper right", fontsize="x-small")
-            ax_error.grid(True, linestyle="--", alpha=0.7)
+            if "Angle" in active_vars:
+                ax.plot(t_steps, q_values[j], label=f"Angle", color=colors["Angle"], linestyle=ls, linewidth=1.5)
+                has_plotted = True
+            
+            if "Setpoint" in active_vars:
+                sp_deg = np.rad2deg(setpoints[j])
+                ax.axhline(sp_deg, linestyle="--", color=colors["Setpoint"], label=f"Setpoint", linewidth=1.2, alpha=0.8)
+                has_plotted = True
 
-            # --- 3. Control Signal u(k) Plot ---
-            ax_ctrl.plot(
-                t_steps,
-                u_values[j],
-                label="u(k)",
-                color="#9467bd",
-                linewidth=1.5,
-            )
-            ax_ctrl.set_ylabel("u(k)", fontsize=9)
-            ax_ctrl.legend(loc="upper right", fontsize="x-small")
-            ax_ctrl.grid(True, linestyle="--", alpha=0.7)
+            if "Error" in active_vars:
+                ax.plot(t_steps, error_values[j], label=f"Err", color=colors["Error"], linestyle=ls, linewidth=1.5)
+                has_plotted = True
 
-            # --- 4. Torque Plot ---
-            ax_torque.plot(
-                t_steps,
-                torque_values[j],
-                label="Torque",
-                color="#2ca02c",
-                linewidth=1.5,
-            )
-            ax_torque.set_ylabel("Nm", fontsize=9)
-            ax_torque.legend(loc="upper right", fontsize="x-small")
-            ax_torque.grid(True, linestyle="--", alpha=0.7)
+            if "U(k)" in active_vars:
+                ax.plot(t_steps, u_values[j], label=f"U(k)", color=colors["U(k)"], linestyle=ls, linewidth=1.5)
+                has_plotted = True
 
-            # Hide X labels for all except bottom row
-            if j < 5:
-                for ax in [ax_angle, ax_error, ax_ctrl, ax_torque]:
-                    ax.tick_params(labelbottom=False)
+            if "Torque(Nm)" in active_vars:
+                ax.plot(t_steps, torque_values[j], label=f"Torque", color=colors["Torque(Nm)"], linestyle=ls, linewidth=1.5)
+                has_plotted = True
 
-        # Bottom row X labels
-        for k in range(4):
-            self.axs[-4 + k].set_xlabel("Time (s)", fontsize=10)
+            if "P" in active_vars:
+                ax.plot(t_steps, p_values[j], label=f"P", color=colors["P"], linestyle=ls, linewidth=1.5)
+                has_plotted = True
+
+            if "I" in active_vars:
+                ax.plot(t_steps, i_values[j], label=f"I", color=colors["I"], linestyle=ls, linewidth=1.5)
+                has_plotted = True
+
+            if "D" in active_vars:
+                ax.plot(t_steps, d_values[j], label=f"D", color=colors["D"], linestyle=ls, linewidth=1.5)
+                has_plotted = True
+
+            if has_plotted:
+                ax.set_ylabel(f"J{j+1}", fontsize=12)
+                # Only show legend on the top plot to save space, or show on all if preferred
+                pass  # We will do it per-axis but position it well
+                ax.legend(loc="center left", bbox_to_anchor=(1.05, 0.5), fontsize="large")
+                ax.grid(True, linestyle="--", alpha=0.7)
+
+        # Set X label only on the bottom axis
+        if n_joints > 0:
+            self.axs[-1].set_xlabel("Time (s)", fontsize=12)
+
+        # Better layout for out-of-bounds legend
+        self.fig.tight_layout(rect=[0, 0, 0.85, 1])
 
         self.draw()
 

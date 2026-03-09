@@ -258,6 +258,28 @@ class MainWindow(QtWidgets.QMainWindow):
         self.pc_run_button.setStyleSheet("padding: 10px; font-weight: bold;")
         self.pc_run_button.clicked.connect(self.on_run_pc)
 
+        # Joint toggles
+        joint_box = QtWidgets.QGroupBox("Show Joints")
+        joint_layout = QtWidgets.QHBoxLayout(joint_box)
+        self.pc_joint_checks = []
+        for i in range(6):
+            chk = QtWidgets.QCheckBox(f"J{i+1}")
+            chk.setChecked(i == 1)  # Default Joint 2 enabled
+            self.pc_joint_checks.append(chk)
+            joint_layout.addWidget(chk)
+
+        # Variable toggles
+        var_box = QtWidgets.QGroupBox("Show Variables")
+        var_layout = QtWidgets.QHBoxLayout(var_box)
+        self.pc_var_checks = {}
+        
+        var_names = ["Angle", "Setpoint", "Error", "U(k)", "Torque(Nm)", "P", "I", "D"]
+        for v in var_names:
+            chk = QtWidgets.QCheckBox(v)
+            chk.setChecked(v in ["Angle", "Setpoint"]) # sensible defaults
+            self.pc_var_checks[v] = chk
+            var_layout.addWidget(chk)
+
         scroll = QtWidgets.QScrollArea()
         scroll.setWidgetResizable(True)
         scroll_content = QtWidgets.QWidget()
@@ -267,6 +289,8 @@ class MainWindow(QtWidgets.QMainWindow):
         scroll_layout.addWidget(kp_box)
         scroll_layout.addWidget(ki_box)
         scroll_layout.addWidget(kd_box)
+        scroll_layout.addWidget(joint_box)
+        scroll_layout.addWidget(var_box)
         scroll_layout.addWidget(self.pc_run_button)
         scroll_layout.addStretch()
 
@@ -399,6 +423,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 error_values,
                 u_values,
                 torque_values,
+                p_values,
+                i_values,
+                d_values,
             ) = run_pid_controller(
                 setpoints=setpoints_rad,
                 pid_values=pid_values,
@@ -411,7 +438,12 @@ class MainWindow(QtWidgets.QMainWindow):
                 error_values=error_values,
                 u_values=u_values,
                 torque_values=torque_values,
+                p_values=p_values,
+                i_values=i_values,
+                d_values=d_values,
                 setpoints=setpoints_rad,
+                active_joints=[i for i, chk in enumerate(self.pc_joint_checks) if chk.isChecked()],
+                active_vars=[v for v, chk in self.pc_var_checks.items() if chk.isChecked()],
             )
             # q_values from pc is shape (6, N), animate_3d expects (N, 6)
             q_traj = np.array(q_values).T
@@ -475,7 +507,7 @@ class MainWindow(QtWidgets.QMainWindow):
                         pid_values.append(PIDValue(Kp=f64(100), Ki=f64(0), Kd=f64(10)))
 
                 # Run Sim (shorter duration for interactive feel)
-                t_steps, q_values, _, _, _ = run_pid_controller(
+                t_steps, q_values, *_ = run_pid_controller(
                     setpoints_rad, pid_values, duration=3.0, steps=300
                 )
                 # q_values shape is (6, N), transform it for 3D animation
