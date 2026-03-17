@@ -151,8 +151,7 @@ class MplCanvas(FigureCanvas):
                 has_plotted = True
             
             if "Setpoint" in active_vars:
-                sp_deg = np.rad2deg(setpoints[j])
-                ax.axhline(sp_deg, linestyle="--", color=colors["Setpoint"], label=f"Setpoint", linewidth=1.2, alpha=0.8)
+                ax.plot(t_steps, setpoints[j], linestyle="--", color=colors["Setpoint"], label=f"Setpoint", linewidth=1.2, alpha=0.8)
                 has_plotted = True
 
             if "Error" in active_vars:
@@ -229,8 +228,7 @@ class MplCanvas(FigureCanvas):
                 has_plotted = True
             
             if "Setpoint" in active_vars:
-                sp_deg = np.rad2deg(setpoints[j])
-                ax.axhline(sp_deg, linestyle="--", color=colors["Setpoint"], label=f"Setpoint", linewidth=1.2, alpha=0.8)
+                ax.plot(t_sub, setpoints[j][:frame_idx], linestyle="--", color=colors["Setpoint"], label=f"Setpoint", linewidth=1.2, alpha=0.8)
                 has_plotted = True
 
             if "Error" in active_vars:
@@ -268,9 +266,8 @@ class MplCanvas(FigureCanvas):
                     y_min = min(y_min, min(q_values[j]))
                     y_max = max(y_max, max(q_values[j]))
                 if "Setpoint" in active_vars:
-                    sp = np.rad2deg(setpoints[j])
-                    y_min = min(y_min, sp)
-                    y_max = max(y_max, sp)
+                    y_min = min(y_min, min(setpoints[j]))
+                    y_max = max(y_max, max(setpoints[j]))
                 if "Error" in active_vars:
                     y_min = min(y_min, min(error_values[j]))
                     y_max = max(y_max, max(error_values[j]))

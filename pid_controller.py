@@ -6,6 +6,8 @@ from numpy import float64 as f64
 from numpy.typing import NDArray
 from roboticstoolbox import models
 
+from trajectory import TrajectoryGenerator, StaticTrajectory
+
 
 @dataclass
 class PIDValue:
@@ -46,6 +48,7 @@ def run_pid_controller(
     duration: float = 10.0,
     steps: int = 1000,
     q0: NDArray[f64] | None = None,
+    trajectory: TrajectoryGenerator | None = None,
 ):
     robot = models.DH.Puma560()
 
@@ -66,6 +69,10 @@ def run_pid_controller(
         for i in range(len(setpoints))
     ]
 
+    # Fall back to static trajectory when no explicit generator is given
+    if trajectory is None:
+        trajectory = StaticTrajectory(setpoints)
+
     t_steps: NDArray[f64] = np.linspace(0, duration, steps)
     dt: f64 = f64(duration / steps)
 
@@ -76,9 +83,14 @@ def run_pid_controller(
     p_values: list[list[f64]] = [[] for _ in range(6)]
     i_values: list[list[f64]] = [[] for _ in range(6)]
     d_values: list[list[f64]] = [[] for _ in range(6)]
+    setpoint_values: list[list[f64]] = [[] for _ in range(6)]
 
     # ---------------- Simulation Loop ----------------
-    for _ in t_steps:
+    for t_now in t_steps:
+        # Update each PID controller's setpoint from the trajectory
+        current_sp = trajectory.get_setpoint(float(t_now))
+        for i in range(6):
+            pids[i].setpoint = current_sp[i]
         M: NDArray[f64] = robot.inertia(q)  # pyright: ignore[reportAttributeAccessIssue]
         C: NDArray[f64] = robot.coriolis(q, qd)  # pyright: ignore[reportAttributeAccessIssue]
         G: NDArray[f64] = robot.gravload(q)  # pyright: ignore[reportAttributeAccessIssue]
@@ -105,8 +117,9 @@ def run_pid_controller(
             p_values[i].append(pids[i].p_term)
             i_values[i].append(pids[i].i_term)
             d_values[i].append(pids[i].d_term)
+            setpoint_values[i].append(np.rad2deg(current_sp[i]))
 
-    return t_steps, q_values, error_values, u_values, torque_values, p_values, i_values, d_values
+    return t_steps, q_values, error_values, u_values, torque_values, p_values, i_values, d_values, setpoint_values
 
 
 def plot_pid_controller_output(t_steps, q_values, u_values, setpoints, p_values, i_values, d_values):

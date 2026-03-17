@@ -8,6 +8,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from canvas import MplCanvas
 from dynamics import run_forward_dynamics, run_inverse_dynamics
 from pid_controller import PIDValue, run_pid_controller
+from trajectory import TrajectoryMode, StaticTrajectory, WaypointTrajectory, SineTrajectory
 import roboticstoolbox as rtb
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -299,6 +300,96 @@ class MainWindow(QtWidgets.QMainWindow):
 
             joints_layout.addWidget(group_box)
 
+        # ---- Trajectory Mode Selector ----
+        traj_mode_box = QtWidgets.QGroupBox("Trajectory Mode")
+        traj_mode_layout = QtWidgets.QVBoxLayout(traj_mode_box)
+        self.pc_traj_combo = QtWidgets.QComboBox()
+        for mode in TrajectoryMode:
+            self.pc_traj_combo.addItem(mode.value)
+        traj_mode_layout.addWidget(self.pc_traj_combo)
+
+        # Stacked widget to swap between trajectory parameter panels
+        self.pc_traj_stack = QtWidgets.QStackedWidget()
+
+        # Page 0: Static — no extra UI needed, just a label
+        static_page = QtWidgets.QWidget()
+        static_lbl = QtWidgets.QLabel("Uses the per-joint Setpoint values above.")
+        static_lbl.setWordWrap(True)
+        QtWidgets.QVBoxLayout(static_page).addWidget(static_lbl)
+        self.pc_traj_stack.addWidget(static_page)
+
+        # Page 1: Waypoints
+        wp_page = QtWidgets.QWidget()
+        wp_layout = QtWidgets.QVBoxLayout(wp_page)
+        self.pc_wp_joint_combo = QtWidgets.QComboBox()
+        for i in range(6):
+            self.pc_wp_joint_combo.addItem(f"Joint {i+1}")
+        wp_layout.addWidget(self.pc_wp_joint_combo)
+
+        self.pc_wp_tables: list[QtWidgets.QTableWidget] = []
+        self.pc_wp_table_stack = QtWidgets.QStackedWidget()
+        for i in range(6):
+            table = QtWidgets.QTableWidget(2, 2)
+            table.setHorizontalHeaderLabels(["Time (s)", "Angle (Deg)"])
+            table.horizontalHeader().setStretchLastSection(True)
+            table.setItem(0, 0, QtWidgets.QTableWidgetItem("0.0"))
+            table.setItem(0, 1, QtWidgets.QTableWidgetItem("0.0"))
+            table.setItem(1, 0, QtWidgets.QTableWidgetItem("10.0"))
+            table.setItem(1, 1, QtWidgets.QTableWidgetItem("0.0"))
+            self.pc_wp_tables.append(table)
+            self.pc_wp_table_stack.addWidget(table)
+        wp_layout.addWidget(self.pc_wp_table_stack)
+        self.pc_wp_joint_combo.currentIndexChanged.connect(
+            self.pc_wp_table_stack.setCurrentIndex
+        )
+
+        wp_btn_layout = QtWidgets.QHBoxLayout()
+        self.pc_wp_add_btn = QtWidgets.QPushButton("Add Row")
+        self.pc_wp_rm_btn = QtWidgets.QPushButton("Remove Row")
+        wp_btn_layout.addWidget(self.pc_wp_add_btn)
+        wp_btn_layout.addWidget(self.pc_wp_rm_btn)
+        wp_layout.addLayout(wp_btn_layout)
+
+        self.pc_wp_add_btn.clicked.connect(self._wp_add_row)
+        self.pc_wp_rm_btn.clicked.connect(self._wp_remove_row)
+
+        self.pc_traj_stack.addWidget(wp_page)
+
+        # Page 2: Sine Wave
+        sine_page = QtWidgets.QWidget()
+        sine_layout = QtWidgets.QVBoxLayout(sine_page)
+        self.pc_sine_amp = []
+        self.pc_sine_freq = []
+        self.pc_sine_offset = []
+        self.pc_sine_phase = []
+        for i in range(6):
+            grp = QtWidgets.QGroupBox(f"Joint {i+1}")
+            fl = QtWidgets.QFormLayout(grp)
+            fl.setVerticalSpacing(2)
+            amp = QtWidgets.QLineEdit("0.0")
+            amp.setValidator(QtGui.QDoubleValidator())
+            freq = QtWidgets.QLineEdit("0.5")
+            freq.setValidator(QtGui.QDoubleValidator())
+            off = QtWidgets.QLineEdit("0.0")
+            off.setValidator(QtGui.QDoubleValidator())
+            ph = QtWidgets.QLineEdit("0.0")
+            ph.setValidator(QtGui.QDoubleValidator())
+            fl.addRow("Amplitude (Deg):", amp)
+            fl.addRow("Frequency (Hz):", freq)
+            fl.addRow("Offset (Deg):", off)
+            fl.addRow("Phase (Deg):", ph)
+            self.pc_sine_amp.append(amp)
+            self.pc_sine_freq.append(freq)
+            self.pc_sine_offset.append(off)
+            self.pc_sine_phase.append(ph)
+            sine_layout.addWidget(grp)
+        self.pc_traj_stack.addWidget(sine_page)
+
+        traj_mode_layout.addWidget(self.pc_traj_stack)
+        self.pc_traj_combo.currentIndexChanged.connect(
+            self.pc_traj_stack.setCurrentIndex
+        )
+
         self.pc_run_button = QtWidgets.QPushButton("Run PID Controller")
         self.pc_run_button.setStyleSheet("padding: 10px; font-weight: bold;")
         self.pc_run_button.clicked.connect(self.on_run_pc)
@@ -345,6 +436,7 @@ class MainWindow(QtWidgets.QMainWindow):
         scroll_layout = QtWidgets.QVBoxLayout(scroll_content)
 
         scroll_layout.addWidget(joints_widget)
+        scroll_layout.addWidget(traj_mode_box)
         scroll_layout.addWidget(params_box)
         scroll_layout.addWidget(joint_box)
         scroll_layout.addWidget(var_box)
@@ -353,6 +445,19 @@ class MainWindow(QtWidgets.QMainWindow):
 
         scroll.setWidget(scroll_content)
         layout.addWidget(scroll)
+
+    # ---- Waypoint table helpers ----
+    def _wp_add_row(self):
+        table = self.pc_wp_tables[self.pc_wp_joint_combo.currentIndex()]
+        row = table.rowCount()
+        table.insertRow(row)
+        table.setItem(row, 0, QtWidgets.QTableWidgetItem(""))
+        table.setItem(row, 1, QtWidgets.QTableWidgetItem(""))
+
+    def _wp_remove_row(self):
+        table = self.pc_wp_tables[self.pc_wp_joint_combo.currentIndex()]
+        if table.rowCount() > 1:
+            table.removeRow(table.rowCount() - 1)
 
     def setup_tuning_tab(self):
         layout = QtWidgets.QVBoxLayout(self.tab_tuning)
@@ -452,6 +557,39 @@ class MainWindow(QtWidgets.QMainWindow):
             self.id_run_button.setText("Run Inverse Dynamics")
             self.id_run_button.setEnabled(True)
 
+    def _build_trajectory(self, setpoints_rad, duration):
+        """Build a TrajectoryGenerator from the current UI state."""
+        mode_text = self.pc_traj_combo.currentText()
+        mode = TrajectoryMode(mode_text)
+
+        if mode == TrajectoryMode.WAYPOINT:
+            waypoints: list[list[tuple[float, float]]] = []
+            for i in range(6):
+                table = self.pc_wp_tables[i]
+                joint_wps: list[tuple[float, float]] = []
+                for row in range(table.rowCount()):
+                    t_item = table.item(row, 0)
+                    a_item = table.item(row, 1)
+                    if t_item and a_item and t_item.text() and a_item.text():
+                        joint_wps.append((float(t_item.text()), float(a_item.text())))
+                if not joint_wps:
+                    joint_wps = [(0.0, 0.0), (duration, 0.0)]
+                waypoints.append(joint_wps)
+            return WaypointTrajectory(waypoints)
+
+        elif mode == TrajectoryMode.SINE_WAVE:
+            params: list[tuple[float, float, float, float]] = []
+            for i in range(6):
+                amp = float(self.pc_sine_amp[i].text())
+                freq = float(self.pc_sine_freq[i].text())
+                off = float(self.pc_sine_offset[i].text())
+                ph = float(self.pc_sine_phase[i].text())
+                params.append((amp, freq, off, ph))
+            return SineTrajectory(params)
+
+        else:  # STATIC
+            return StaticTrajectory(setpoints_rad)
+
     def on_run_pc(self):
         self.pc_run_button.setText("Running...")
         self.pc_run_button.setEnabled(False)
@@ -482,7 +620,10 @@ class MainWindow(QtWidgets.QMainWindow):
             duration = float(self.pc_duration_entry.text())
             steps = int(self.pc_steps_entry.text())
 
-            # 3) Run simulation
+            # 3) Build trajectory generator from UI
+            trajectory = self._build_trajectory(setpoints_rad, duration)
+
+            # 4) Run simulation
             (
                 t_steps,
                 q_values,
@@ -492,22 +633,24 @@ class MainWindow(QtWidgets.QMainWindow):
                 p_values,
                 i_values,
                 d_values,
+                setpoint_values,
             ) = run_pid_controller(
                 setpoints=setpoints_rad,
                 pid_values=pid_values,
                 duration=duration,
                 steps=steps,
                 q0=q0_rad,
+                trajectory=trajectory,
             )
 
             active_joints = [i for i, chk in enumerate(self.pc_joint_checks) if chk.isChecked()]
             active_vars = [v for v, chk in self.pc_var_checks.items() if chk.isChecked()]
 
-            # 4) Plot on the embedded canvas
+            # 5) Plot on the embedded canvas
             if self.pc_animate_check.isChecked():
                 # q_values from pc is shape (6, N), animate_3d expects (N, 6)
                 q_traj = np.array(q_values).T
-                full_results = (q_values, error_values, u_values, torque_values, p_values, i_values, d_values, setpoints_rad, active_joints, active_vars)
+                full_results = (q_values, error_values, u_values, torque_values, p_values, i_values, d_values, setpoint_values, active_joints, active_vars)
                 self.animate_3d(t_steps, q_traj, full_results=full_results)
             else:
                 self.plot_canvas.plot_pc_results(
@@ -519,7 +662,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     p_values=p_values,
                     i_values=i_values,
                     d_values=d_values,
-                    setpoints=setpoints_rad,
+                    setpoints=setpoint_values,
                     active_joints=active_joints,
                     active_vars=active_vars,
                 )
@@ -586,7 +729,7 @@ class MainWindow(QtWidgets.QMainWindow):
                         pid_values.append(PIDValue(Kp=f64(100), Ki=f64(0), Kd=f64(10)))
 
                 # Run Sim (shorter duration for interactive feel)
-                t_steps, q_values, *_ = run_pid_controller(
+                t_steps, q_values, *rest = run_pid_controller(
                     setpoints_rad, pid_values, duration=3.0, steps=300
                 )
                 # q_values shape is (6, N), transform it for 3D animation
