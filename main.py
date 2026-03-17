@@ -88,15 +88,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self.env = self.robot.plot([0, 0, 0, 0, 0, 0], backend='pyplot', fig=self.fig_3d, block=False)
         self.canvas_3d.draw()
 
-    def animate_3d(self, t, q_trajectory):
+    def animate_3d(self, t, q_trajectory, full_results=None):
         """Helper to animate the robot 3D view given a trajectory"""
         if q_trajectory is None or len(q_trajectory) == 0:
             return
             
-        # For responsiveness, downsample the trajectory if it's too fine,
-        # or use a QTimer to animate without blocking the GUI.
-        # Here we perform a simple loop with processEvents
-        
+        # Optional: extract results for animating the plot
+        if full_results:
+            (q_values, error_values, u_values, torque_values, p_values, i_values, d_values, setpoints, active_joints, active_vars) = full_results
+            
+            # Reset figure once before animation starts
+            n_joints = len(active_joints)
+            if n_joints > 0:
+                self.plot_canvas._reset_figure(n_joints, 1, "PID Controller: Variables per Joint")
+            
         # Decide downsampling to aim for roughly ~30fps visual if simulation is 100Hz
         dt = t[1] - t[0] if len(t) > 1 else 0.01
         target_fps = 30.0
@@ -109,9 +114,23 @@ class MainWindow(QtWidgets.QMainWindow):
                 if self.env:
                     self.env.step(0.01)
                 self.canvas_3d.draw_idle()
+                
+                # Animate Graph if active data is provided
+                if full_results and n_joints > 0:
+                    # Provide up to i+1 elements
+                    self.plot_canvas.plot_pc_results_animated(
+                        t, q_values, error_values, u_values, torque_values, p_values, i_values, d_values, setpoints, active_joints, active_vars, frame_idx=i+1
+                    )
             except Exception as e:
                 print(f"Animation step error: {e}")
             QtCore.QCoreApplication.processEvents()
+            
+        # Final frame
+        final_idx = len(q_trajectory)
+        if full_results and n_joints > 0 and i != final_idx - 1:
+             self.plot_canvas.plot_pc_results_animated(
+                t, q_values, error_values, u_values, torque_values, p_values, i_values, d_values, setpoints, active_joints, active_vars, frame_idx=final_idx
+             )
 
     def _create_joint_input_group(self, title, defaults):
         group_box = QtWidgets.QGroupBox(title)
@@ -238,21 +257,47 @@ class MainWindow(QtWidgets.QMainWindow):
     def setup_pc_tab(self):
         layout = QtWidgets.QVBoxLayout(self.tab_pc)
 
-        setpoint_box, self.pc_setpoint_entries = self._create_joint_input_group(
-            "Setpoints [Deg]", [0.0] * 6
-        )
+        joints_widget = QtWidgets.QWidget()
+        joints_layout = QtWidgets.QVBoxLayout(joints_widget)
+        joints_layout.setContentsMargins(0, 0, 0, 0)
 
-        kp_box, self.pc_kp_entries = self._create_joint_input_group(
-            "Proportional Gain (Kp)", [1.0] * 6
-        )
+        self.pc_q0_entries = []
+        self.pc_setpoint_entries = []
+        self.pc_kp_entries = []
+        self.pc_ki_entries = []
+        self.pc_kd_entries = []
 
-        ki_box, self.pc_ki_entries = self._create_joint_input_group(
-            "Integral Gain (Ki)", [0.0] * 6
-        )
+        for i in range(6):
+            group_box = QtWidgets.QGroupBox(f"Joint {i + 1}")
+            form_layout = QtWidgets.QFormLayout(group_box)
+            form_layout.setVerticalSpacing(2)
 
-        kd_box, self.pc_kd_entries = self._create_joint_input_group(
-            "Derivative Gain (Kd)", [0.0] * 6
-        )
+            q0_entry = QtWidgets.QLineEdit("0.0")
+            q0_entry.setValidator(QtGui.QDoubleValidator())
+            self.pc_q0_entries.append(q0_entry)
+            form_layout.addRow("Start Angle [Deg]:", q0_entry)
+
+            sp_entry = QtWidgets.QLineEdit("0.0")
+            sp_entry.setValidator(QtGui.QDoubleValidator())
+            self.pc_setpoint_entries.append(sp_entry)
+            form_layout.addRow("Setpoint [Deg]:", sp_entry)
+
+            kp_entry = QtWidgets.QLineEdit("1.0")
+            kp_entry.setValidator(QtGui.QDoubleValidator())
+            self.pc_kp_entries.append(kp_entry)
+            form_layout.addRow("Kp:", kp_entry)
+
+            ki_entry = QtWidgets.QLineEdit("0.0")
+            ki_entry.setValidator(QtGui.QDoubleValidator())
+            self.pc_ki_entries.append(ki_entry)
+            form_layout.addRow("Ki:", ki_entry)
+
+            kd_entry = QtWidgets.QLineEdit("0.0")
+            kd_entry.setValidator(QtGui.QDoubleValidator())
+            self.pc_kd_entries.append(kd_entry)
+            form_layout.addRow("Kd:", kd_entry)
+
+            joints_layout.addWidget(group_box)
 
         self.pc_run_button = QtWidgets.QPushButton("Run PID Controller")
         self.pc_run_button.setStyleSheet("padding: 10px; font-weight: bold;")
@@ -260,35 +305,47 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Joint toggles
         joint_box = QtWidgets.QGroupBox("Show Joints")
-        joint_layout = QtWidgets.QHBoxLayout(joint_box)
+        joint_layout = QtWidgets.QGridLayout(joint_box)
         self.pc_joint_checks = []
         for i in range(6):
             chk = QtWidgets.QCheckBox(f"J{i+1}")
             chk.setChecked(i == 1)  # Default Joint 2 enabled
             self.pc_joint_checks.append(chk)
-            joint_layout.addWidget(chk)
+            joint_layout.addWidget(chk, i // 3, i % 3)
 
         # Variable toggles
         var_box = QtWidgets.QGroupBox("Show Variables")
-        var_layout = QtWidgets.QHBoxLayout(var_box)
+        var_layout = QtWidgets.QGridLayout(var_box)
         self.pc_var_checks = {}
         
         var_names = ["Angle", "Setpoint", "Error", "U(k)", "Torque(Nm)", "P", "I", "D"]
-        for v in var_names:
+        for idx, v in enumerate(var_names):
             chk = QtWidgets.QCheckBox(v)
             chk.setChecked(v in ["Angle", "Setpoint"]) # sensible defaults
             self.pc_var_checks[v] = chk
-            var_layout.addWidget(chk)
+            var_layout.addWidget(chk, idx // 3, idx % 3)
+
+        # Simulation Parameters
+        params_box = QtWidgets.QGroupBox("Simulation Parameters")
+        params_layout = QtWidgets.QFormLayout(params_box)
+        self.pc_duration_entry = QtWidgets.QLineEdit("10.0")
+        self.pc_steps_entry = QtWidgets.QLineEdit("1000")
+        self.pc_duration_entry.setValidator(QtGui.QDoubleValidator(0.1, 100.0, 2))
+        self.pc_steps_entry.setValidator(QtGui.QIntValidator(10, 10000))
+        params_layout.addRow("Duration (s):", self.pc_duration_entry)
+        params_layout.addRow("Steps:", self.pc_steps_entry)
+
+        self.pc_animate_check = QtWidgets.QCheckBox("Enable Live Animation")
+        self.pc_animate_check.setChecked(True)
+        params_layout.addRow("", self.pc_animate_check)
 
         scroll = QtWidgets.QScrollArea()
         scroll.setWidgetResizable(True)
         scroll_content = QtWidgets.QWidget()
         scroll_layout = QtWidgets.QVBoxLayout(scroll_content)
 
-        scroll_layout.addWidget(setpoint_box)
-        scroll_layout.addWidget(kp_box)
-        scroll_layout.addWidget(ki_box)
-        scroll_layout.addWidget(kd_box)
+        scroll_layout.addWidget(joints_widget)
+        scroll_layout.addWidget(params_box)
         scroll_layout.addWidget(joint_box)
         scroll_layout.addWidget(var_box)
         scroll_layout.addWidget(self.pc_run_button)
@@ -401,7 +458,13 @@ class MainWindow(QtWidgets.QMainWindow):
         QtCore.QCoreApplication.processEvents()
 
         try:
-            # 1) Read setpoints from UI (in degrees) and convert to radians
+            # 1) Read starting angles and setpoints from UI (in degrees) and convert to radians
+            q0_deg = np.array(
+                self._get_joint_values(self.pc_q0_entries),
+                dtype=np.float64,
+            )
+            q0_rad = np.deg2rad(q0_deg)
+
             setpoints_deg = np.array(
                 self._get_joint_values(self.pc_setpoint_entries),
                 dtype=np.float64,
@@ -415,6 +478,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 Ki = float(self.pc_ki_entries[i].text())
                 Kd = float(self.pc_kd_entries[i].text())
                 pid_values.append(PIDValue(Kp=f64(Kp), Ki=f64(Ki), Kd=f64(Kd)))
+                
+            duration = float(self.pc_duration_entry.text())
+            steps = int(self.pc_steps_entry.text())
 
             # 3) Run simulation
             (
@@ -429,25 +495,38 @@ class MainWindow(QtWidgets.QMainWindow):
             ) = run_pid_controller(
                 setpoints=setpoints_rad,
                 pid_values=pid_values,
+                duration=duration,
+                steps=steps,
+                q0=q0_rad,
             )
 
+            active_joints = [i for i, chk in enumerate(self.pc_joint_checks) if chk.isChecked()]
+            active_vars = [v for v, chk in self.pc_var_checks.items() if chk.isChecked()]
+
             # 4) Plot on the embedded canvas
-            self.plot_canvas.plot_pc_results(
-                t_steps=t_steps,
-                q_values=q_values,
-                error_values=error_values,
-                u_values=u_values,
-                torque_values=torque_values,
-                p_values=p_values,
-                i_values=i_values,
-                d_values=d_values,
-                setpoints=setpoints_rad,
-                active_joints=[i for i, chk in enumerate(self.pc_joint_checks) if chk.isChecked()],
-                active_vars=[v for v, chk in self.pc_var_checks.items() if chk.isChecked()],
-            )
-            # q_values from pc is shape (6, N), animate_3d expects (N, 6)
-            q_traj = np.array(q_values).T
-            self.animate_3d(t_steps, q_traj)
+            if self.pc_animate_check.isChecked():
+                # q_values from pc is shape (6, N), animate_3d expects (N, 6)
+                q_traj = np.array(q_values).T
+                full_results = (q_values, error_values, u_values, torque_values, p_values, i_values, d_values, setpoints_rad, active_joints, active_vars)
+                self.animate_3d(t_steps, q_traj, full_results=full_results)
+            else:
+                self.plot_canvas.plot_pc_results(
+                    t_steps=t_steps,
+                    q_values=q_values,
+                    error_values=error_values,
+                    u_values=u_values,
+                    torque_values=torque_values,
+                    p_values=p_values,
+                    i_values=i_values,
+                    d_values=d_values,
+                    setpoints=setpoints_rad,
+                    active_joints=active_joints,
+                    active_vars=active_vars,
+                )
+                self.robot.q = np.array(q_values)[:, -1]
+                if self.env:
+                    self.env.step(0.01)
+                self.canvas_3d.draw_idle()
 
         except Exception as e:
             self.show_error_message("PID Controller Error", f"An error occurred:\n{e}")

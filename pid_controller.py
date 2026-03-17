@@ -45,11 +45,16 @@ def run_pid_controller(
     pid_values: list[PIDValue],
     duration: float = 10.0,
     steps: int = 1000,
+    q0: NDArray[f64] | None = None,
 ):
     robot = models.DH.Puma560()
 
-    q: NDArray[f64] = np.zeros(6)
-    qd: NDArray[f64] = np.zeros(6)
+    if q0 is not None:
+        q: NDArray[f64] = np.array(q0, dtype=f64)
+    else:
+        q: NDArray[f64] = np.zeros(6, dtype=f64)
+        
+    qd: NDArray[f64] = np.zeros(6, dtype=f64)
 
     pids: list[PIDController] = [
         PIDController(
