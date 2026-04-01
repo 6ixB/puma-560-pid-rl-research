@@ -147,7 +147,7 @@ class MplCanvas(FigureCanvas):
             has_plotted = False
 
             if "Angle" in active_vars:
-                ax.plot(t_steps, q_values[j], label=f"Angle", color=colors["Angle"], linestyle=ls, linewidth=1.5)
+                ax.plot(t_steps, q_values[j], label=f"Output", color=colors["Angle"], linestyle=ls, linewidth=1.5)
                 has_plotted = True
             
             if "Setpoint" in active_vars:
