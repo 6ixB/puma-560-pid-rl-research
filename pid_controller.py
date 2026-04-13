@@ -46,7 +46,7 @@ def run_pid_controller(
     setpoints: NDArray[f64],
     pid_values: list[PIDValue],
     duration: float = 10.0,
-    steps: int = 1000,
+    dt: float = 0.01,
     q0: NDArray[f64] | None = None,
     trajectory: TrajectoryGenerator | None = None,
 ):
@@ -73,8 +73,8 @@ def run_pid_controller(
     if trajectory is None:
         trajectory = StaticTrajectory(setpoints)
 
-    t_steps: NDArray[f64] = np.linspace(0, duration, steps)
-    dt: f64 = f64(duration / steps)
+    t_steps: NDArray[f64] = np.arange(0, duration, dt)
+    dt: f64 = f64(dt)
 
     q_values: list[list[f64]] = [[] for _ in range(6)]
     error_values: list[list[f64]] = [[] for _ in range(6)]
@@ -126,7 +126,7 @@ def plot_pid_controller_output(t_steps, q_values, u_values, setpoints, p_values,
     # ---------------- Plot: angle+setpoint, components, torque ----------------
     joint_to_plot = 5  # 0..5
 
-    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 12), sharex=True)
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 12), sharex=True, dpi=100)
 
     # Top: angle & setpoint
     ax1.plot(

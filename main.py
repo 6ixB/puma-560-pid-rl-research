@@ -89,49 +89,65 @@ class MainWindow(QtWidgets.QMainWindow):
         self.env = self.robot.plot([0, 0, 0, 0, 0, 0], backend='pyplot', fig=self.fig_3d, block=False)
         self.canvas_3d.draw()
 
-    def animate_3d(self, t, q_trajectory, full_results=None):
-        """Helper to animate the robot 3D view given a trajectory"""
+    def animate_3d(self, t, q_trajectory, full_results=None, animate_robot=True, animate_plot=True):
+        """Helper to animate the robot 3D view and/or plot drawing given a trajectory"""
         if q_trajectory is None or len(q_trajectory) == 0:
             return
             
-        # Optional: extract results for animating the plot
-        if full_results:
-            (q_values, error_values, u_values, torque_values, p_values, i_values, d_values, setpoints, active_joints, active_vars) = full_results
-            
-            # Reset figure once before animation starts
-            n_joints = len(active_joints)
-            if n_joints > 0:
-                self.plot_canvas._reset_figure(n_joints, 1, "PID Controller: Variables per Joint")
-            
+        # Handle full_results structure
+        res_type = None
+        res_data = None
+        if full_results and animate_plot:
+            if isinstance(full_results, dict):
+                res_type = full_results.get('type')
+                res_data = full_results.get('data')
+            else:
+                res_type = 'pid'
+                res_data = full_results
+
         # Decide downsampling to aim for roughly ~30fps visual if simulation is 100Hz
         dt = t[1] - t[0] if len(t) > 1 else 0.01
         target_fps = 30.0
         step_sz = max(1, int(1.0 / (target_fps * dt)))
         
         for i in range(0, len(q_trajectory), step_sz):
-            self.robot.q = np.deg2rad(q_trajectory[i])
             try:
-                # The returned env from plot() handles updates
-                if self.env:
-                    self.env.step(0.01)
-                self.canvas_3d.draw_idle()
+                if animate_robot:
+                    self.robot.q = np.deg2rad(q_trajectory[i])
+                    if self.env:
+                        self.env.step(0.01)
+                    self.canvas_3d.draw_idle()
                 
-                # Animate Graph if active data is provided
-                if full_results and n_joints > 0:
-                    # Provide up to i+1 elements
-                    self.plot_canvas.plot_pc_results_animated(
-                        t, q_values, error_values, u_values, torque_values, p_values, i_values, d_values, setpoints, active_joints, active_vars, frame_idx=i+1
-                    )
+                # Animate Graph if active data is provided and requested
+                if animate_plot and res_type:
+                    if res_type == 'fd':
+                        (t_fd, q_fd, qd_fd, qdd_fd) = res_data
+                        self.plot_canvas.plot_fd_results_animated(t_fd, q_fd, qd_fd, qdd_fd, frame_idx=i+1)
+                    elif res_type == 'id':
+                        (t_id, q_id, qd_id, qdd_id, tau_id, modes_id) = res_data
+                        self.plot_canvas.plot_id_results_animated(t_id, q_id, qd_id, qdd_id, tau_id, modes_id, frame_idx=i+1)
+                    elif res_type == 'pid':
+                        (q_v, err_v, u_v, tq_v, p_v, i_v, d_v, sp_v, joints, vars) = res_data
+                        self.plot_canvas.plot_pc_results_animated(t, q_v, err_v, u_v, tq_v, p_v, i_v, d_v, sp_v, joints, vars, frame_idx=i+1)
             except Exception as e:
                 print(f"Animation step error: {e}")
             QtCore.QCoreApplication.processEvents()
             
         # Final frame
         final_idx = len(q_trajectory)
-        if full_results and n_joints > 0 and i != final_idx - 1:
-             self.plot_canvas.plot_pc_results_animated(
-                t, q_values, error_values, u_values, torque_values, p_values, i_values, d_values, setpoints, active_joints, active_vars, frame_idx=final_idx
-             )
+        if animate_robot:
+            self.robot.q = np.deg2rad(q_trajectory[-1])
+            if self.env:
+                self.env.step(0.01)
+            self.canvas_3d.draw_idle()
+
+        if animate_plot and res_type:
+            if res_type == 'fd':
+                self.plot_canvas.plot_fd_results_animated(*res_data, frame_idx=final_idx)
+            elif res_type == 'id':
+                self.plot_canvas.plot_id_results_animated(*res_data, frame_idx=final_idx)
+            elif res_type == 'pid':
+                self.plot_canvas.plot_pc_results_animated(t, *res_data, frame_idx=final_idx)
 
     def _create_joint_input_group(self, title, defaults):
         group_box = QtWidgets.QGroupBox(title)
@@ -175,6 +191,16 @@ class MainWindow(QtWidgets.QMainWindow):
         params_layout.addRow("Duration (s):", self.fd_duration_entry)
         params_layout.addRow("Time Step (dt):", self.fd_dt_entry)
 
+        self.fd_animate_robot_check = QtWidgets.QCheckBox("Animate Robot")
+        self.fd_animate_robot_check.setChecked(True)
+        self.fd_animate_plot_check = QtWidgets.QCheckBox("Animate Plot")
+        self.fd_animate_plot_check.setChecked(True)
+        
+        anim_layout = QtWidgets.QHBoxLayout()
+        anim_layout.addWidget(self.fd_animate_robot_check)
+        anim_layout.addWidget(self.fd_animate_plot_check)
+        params_layout.addRow("Animation:", anim_layout)
+
         # Run Button
         self.fd_run_button = QtWidgets.QPushButton("Run Forward Dynamics")
         self.fd_run_button.setStyleSheet("padding: 10px; font-weight: bold;")
@@ -217,6 +243,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.id_dt_entry.setValidator(QtGui.QDoubleValidator(0.0001, 1.0, 4))
         params_layout.addRow("Duration (s):", self.id_duration_entry)
         params_layout.addRow("Time Step (dt):", self.id_dt_entry)
+
+        self.id_animate_robot_check = QtWidgets.QCheckBox("Animate Robot")
+        self.id_animate_robot_check.setChecked(True)
+        self.id_animate_plot_check = QtWidgets.QCheckBox("Animate Plot")
+        self.id_animate_plot_check.setChecked(True)
+        
+        anim_layout = QtWidgets.QHBoxLayout()
+        anim_layout.addWidget(self.id_animate_robot_check)
+        anim_layout.addWidget(self.id_animate_plot_check)
+        params_layout.addRow("Animation:", anim_layout)
 
         # Monitor Toggles (Checkboxes)
         plot_box = QtWidgets.QGroupBox("Monitor Variables")
@@ -420,15 +456,21 @@ class MainWindow(QtWidgets.QMainWindow):
         params_box = QtWidgets.QGroupBox("Simulation Parameters")
         params_layout = QtWidgets.QFormLayout(params_box)
         self.pc_duration_entry = QtWidgets.QLineEdit("10.0")
-        self.pc_steps_entry = QtWidgets.QLineEdit("1000")
+        self.pc_dt_entry = QtWidgets.QLineEdit("0.01")
         self.pc_duration_entry.setValidator(QtGui.QDoubleValidator(0.1, 100.0, 2))
-        self.pc_steps_entry.setValidator(QtGui.QIntValidator(10, 10000))
+        self.pc_dt_entry.setValidator(QtGui.QDoubleValidator(0.001, 1.0, 4))
         params_layout.addRow("Duration (s):", self.pc_duration_entry)
-        params_layout.addRow("Steps:", self.pc_steps_entry)
+        params_layout.addRow("Time Step (dt):", self.pc_dt_entry)
 
-        self.pc_animate_check = QtWidgets.QCheckBox("Enable Live Animation")
-        self.pc_animate_check.setChecked(True)
-        params_layout.addRow("", self.pc_animate_check)
+        self.pc_animate_robot_check = QtWidgets.QCheckBox("Animate Robot")
+        self.pc_animate_robot_check.setChecked(True)
+        self.pc_animate_plot_check = QtWidgets.QCheckBox("Animate Plot")
+        self.pc_animate_plot_check.setChecked(True)
+        
+        anim_layout = QtWidgets.QHBoxLayout()
+        anim_layout.addWidget(self.pc_animate_robot_check)
+        anim_layout.addWidget(self.pc_animate_plot_check)
+        params_layout.addRow("Animation:", anim_layout)
 
         scroll = QtWidgets.QScrollArea()
         scroll.setWidgetResizable(True)
@@ -508,8 +550,26 @@ class MainWindow(QtWidgets.QMainWindow):
             dt = float(self.fd_dt_entry.text())
 
             (t, q, qd, qdd) = run_forward_dynamics(torques, duration, dt, q0, qd0)
-            self.plot_canvas.plot_fd_results(t, q, qd, qdd)
-            self.animate_3d(t, q)
+            
+            animate_robot = self.fd_animate_robot_check.isChecked()
+            animate_plot = self.fd_animate_plot_check.isChecked()
+            
+            if animate_robot or animate_plot:
+                full_results = {'type': 'fd', 'data': (t, q, qd, qdd)}
+                if not animate_plot:
+                    self.plot_canvas.plot_fd_results(t, q, qd, qdd)
+                if not animate_robot:
+                    self.robot.q = np.deg2rad(q[-1])
+                    if self.env: self.env.step(0.01)
+                    self.canvas_3d.draw_idle()
+                
+                self.animate_3d(t, q, full_results=full_results, animate_robot=animate_robot, animate_plot=animate_plot)
+            else:
+                self.plot_canvas.plot_fd_results(t, q, qd, qdd)
+                self.robot.q = np.deg2rad(q[-1])
+                if self.env:
+                    self.env.step(0.01)
+                self.canvas_3d.draw_idle()
 
         except Exception as e:
             self.show_error_message("Simulation Error", f"An error occurred:\n{e}")
@@ -548,8 +608,26 @@ class MainWindow(QtWidgets.QMainWindow):
             (t, q, qd, qdd, torques) = run_inverse_dynamics(
                 q_init_deg, q_target_deg, duration, dt
             )
-            self.plot_canvas.plot_id_results(t, q, qd, qdd, torques, active_modes)
-            self.animate_3d(t, q)
+            
+            animate_robot = self.id_animate_robot_check.isChecked()
+            animate_plot = self.id_animate_plot_check.isChecked()
+            
+            if animate_robot or animate_plot:
+                full_results = {'type': 'id', 'data': (t, q, qd, qdd, torques, active_modes)}
+                if not animate_plot:
+                    self.plot_canvas.plot_id_results(t, q, qd, qdd, torques, active_modes)
+                if not animate_robot:
+                    self.robot.q = np.deg2rad(q[-1])
+                    if self.env: self.env.step(0.01)
+                    self.canvas_3d.draw_idle()
+                
+                self.animate_3d(t, q, full_results=full_results, animate_robot=animate_robot, animate_plot=animate_plot)
+            else:
+                self.plot_canvas.plot_id_results(t, q, qd, qdd, torques, active_modes)
+                self.robot.q = np.deg2rad(q[-1])
+                if self.env:
+                    self.env.step(0.01)
+                self.canvas_3d.draw_idle()
 
         except Exception as e:
             self.show_error_message("Simulation Error", f"An error occurred:\n{e}")
@@ -618,7 +696,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 pid_values.append(PIDValue(Kp=f64(Kp), Ki=f64(Ki), Kd=f64(Kd)))
                 
             duration = float(self.pc_duration_entry.text())
-            steps = int(self.pc_steps_entry.text())
+            dt = float(self.pc_dt_entry.text())
 
             # 3) Build trajectory generator from UI
             trajectory = self._build_trajectory(setpoints_rad, duration)
@@ -638,7 +716,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 setpoints=setpoints_rad,
                 pid_values=pid_values,
                 duration=duration,
-                steps=steps,
+                dt=dt,
                 q0=q0_rad,
                 trajectory=trajectory,
             )
@@ -647,11 +725,38 @@ class MainWindow(QtWidgets.QMainWindow):
             active_vars = [v for v, chk in self.pc_var_checks.items() if chk.isChecked()]
 
             # 5) Plot on the embedded canvas
-            if self.pc_animate_check.isChecked():
+            animate_robot = self.pc_animate_robot_check.isChecked()
+            animate_plot = self.pc_animate_plot_check.isChecked()
+
+            if animate_robot or animate_plot:
                 # q_values from pc is shape (6, N), animate_3d expects (N, 6)
                 q_traj = np.array(q_values).T
                 full_results = (q_values, error_values, u_values, torque_values, p_values, i_values, d_values, setpoint_values, active_joints, active_vars)
-                self.animate_3d(t_steps, q_traj, full_results=full_results)
+                
+                # If plot animation is OFF but robot animation is ON, plot the full static results first
+                if not animate_plot:
+                    self.plot_canvas.plot_pc_results(
+                        t_steps=t_steps,
+                        q_values=q_values,
+                        error_values=error_values,
+                        u_values=u_values,
+                        torque_values=torque_values,
+                        p_values=p_values,
+                        i_values=i_values,
+                        d_values=d_values,
+                        setpoints=setpoint_values,
+                        active_joints=active_joints,
+                        active_vars=active_vars,
+                    )
+                
+                # If robot animation is OFF but plot animation is ON, set robot to final pose first
+                if not animate_robot:
+                    self.robot.q = np.array(q_values)[:, -1]
+                    if self.env:
+                        self.env.step(0.01)
+                    self.canvas_3d.draw_idle()
+
+                self.animate_3d(t_steps, q_traj, full_results=full_results, animate_robot=animate_robot, animate_plot=animate_plot)
             else:
                 self.plot_canvas.plot_pc_results(
                     t_steps=t_steps,
@@ -730,7 +835,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
                 # Run Sim (shorter duration for interactive feel)
                 t_steps, q_values, *rest = run_pid_controller(
-                    setpoints_rad, pid_values, duration=3.0, steps=300
+                    setpoints_rad, pid_values, duration=3.0, dt=0.01
                 )
                 # q_values shape is (6, N), transform it for 3D animation
                 q_traj = np.array(q_values).T

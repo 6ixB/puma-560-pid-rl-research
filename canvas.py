@@ -9,6 +9,10 @@ try:
 except OSError:
     plt.style.use("ggplot")  # Fallback
 
+# Figure DPI on-screen (100) vs saved output (300)
+plt.rcParams['figure.dpi'] = 100
+plt.rcParams['savefig.dpi'] = 300
+
 
 class MplCanvas(FigureCanvas):
     """
@@ -44,8 +48,13 @@ class MplCanvas(FigureCanvas):
 
         self.draw()
 
-    def _reset_figure(self, rows, cols, suptitle):
+    def _reset_figure(self, rows, cols, suptitle, force=True):
         """Helper to clear figure and create new subplots grid."""
+        if not force and hasattr(self, 'axs') and len(self.axs) == rows * cols:
+            # We already have the right grid, just update suptitle
+            self.fig.suptitle(suptitle, fontsize=12, weight="bold")
+            return self.axs
+            
         self.fig.clear()
         self.fig.suptitle(suptitle, fontsize=12, weight="bold")
         axs = self.fig.subplots(rows, cols, sharex=True)
@@ -75,6 +84,31 @@ class MplCanvas(FigureCanvas):
 
         self.draw()
 
+    def plot_fd_results_animated(self, t, q, qd, qdd, frame_idx):
+        """Animated plotting for Forward Dynamics results."""
+        self._reset_figure(3, 2, "Forward Dynamics: Joint Positions (Degrees)", force=False)
+        t_sub = t[:frame_idx]
+        
+        for i in range(6):
+            if i >= len(self.axs): break
+            ax = self.axs[i]
+            ax.clear()
+            ax.plot(t_sub, q[:frame_idx, i], label="Position", color="#1f77b4", linewidth=1.5)
+            ax.set_ylabel(f"J{i + 1} (Deg)", fontsize=9)
+            ax.set_xlim(t[0], t[-1])
+            
+            y_min, y_max = np.min(q[:, i]), np.max(q[:, i])
+            margin = (y_max - y_min) * 0.1 if y_max != y_min else 1.0
+            ax.set_ylim(y_min - margin, y_max + margin)
+            
+            ax.legend(loc="upper right", fontsize="x-small", frameon=True)
+            ax.grid(True, linestyle="--", alpha=0.7)
+
+        for i in range(4, 6):
+            self.axs[i].set_xlabel("Time (s)", fontsize=10)
+
+        self.draw_idle()
+
     def plot_id_results(self, t, q, qd, qdd, torques, active_modes):
         """Plots Inverse Dynamics results based on selected modes."""
         title_modes = ", ".join(active_modes) if active_modes else "None"
@@ -99,8 +133,6 @@ class MplCanvas(FigureCanvas):
                 for i in range(6):
                     ax = self.axs[i]
                     ax.plot(t, data[:, i], label=mode, color=color, linewidth=1.5)
-                    # Note: Y-label shows the last plotted unit if mixed, 
-                    # but legend helps distinguish.
                     if len(active_modes) == 1:
                         ax.set_ylabel(f"J{i + 1} ({unit})", fontsize=9)
                     else:
@@ -114,6 +146,48 @@ class MplCanvas(FigureCanvas):
             self.axs[i].set_xlabel("Time (s)", fontsize=10)
 
         self.draw()
+
+    def plot_id_results_animated(self, t, q, qd, qdd, torques, active_modes, frame_idx):
+        """Animated plotting for Inverse Dynamics results."""
+        title_modes = ", ".join(active_modes) if active_modes else "None"
+        self._reset_figure(3, 2, f"Inverse Dynamics: {title_modes}", force=False)
+        t_sub = t[:frame_idx]
+
+        data_map = {
+            "tau": (torques, "Nm", "#d62728"),
+            "q": (q, "Deg", "#1f77b4"),
+            "qd": (qd, "Deg/s", "#ff7f0e"),
+            "qdd": (qdd, "Deg/s^2", "#2ca02c"),
+        }
+
+        for i in range(6):
+            ax = self.axs[i]
+            ax.clear()
+            
+            y_min, y_max = float('inf'), float('-inf')
+            
+            for mode in active_modes:
+                if mode in data_map:
+                    data, unit, color = data_map[mode]
+                    ax.plot(t_sub, data[:frame_idx, i], label=mode, color=color, linewidth=1.5)
+                    y_min = min(y_min, np.min(data[:, i]))
+                    y_max = max(y_max, np.max(data[:, i]))
+                    if len(active_modes) == 1:
+                        ax.set_ylabel(f"J{i + 1} ({unit})", fontsize=9)
+                    else:
+                        ax.set_ylabel(f"J{i + 1}", fontsize=9)
+            
+            ax.set_xlim(t[0], t[-1])
+            margin = (y_max - y_min) * 0.1 if y_max != y_min else 1.0
+            ax.set_ylim(y_min - margin, y_max + margin)
+            
+            ax.legend(loc="upper right", fontsize="x-small", frameon=True)
+            ax.grid(True, linestyle="--", alpha=0.7)
+
+        for i in range(4, 6):
+            self.axs[i].set_xlabel("Time (s)", fontsize=10)
+
+        self.draw_idle()
 
     def plot_pc_results(
         self, t_steps, q_values, error_values, u_values, torque_values, p_values, i_values, d_values, setpoints, active_joints, active_vars
