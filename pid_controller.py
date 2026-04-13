@@ -17,11 +17,12 @@ class PIDValue:
 
 
 class PIDController:
-    def __init__(self, Kp: f64, Ki: f64, Kd: f64, setpoint: f64 = f64(0)) -> None:
+    def __init__(self, Kp: f64, Ki: f64, Kd: f64, setpoint: f64 = f64(0), leak_rate: f64 = 1.0) -> None:
         self.Kp = Kp
         self.Ki = Ki
         self.Kd = Kd
         self.setpoint = setpoint
+        self.leak_rate = leak_rate
         self.integral = 0.0
         self.prev_error = 0.0
         self.p_term = 0.0
@@ -30,7 +31,7 @@ class PIDController:
 
     def update(self, measurement: f64, dt: f64) -> tuple[f64, f64]:
         error = self.setpoint - measurement
-        self.integral += error * dt
+        self.integral = (self.integral * self.leak_rate) + error * dt
         self.integral = max(min(self.integral, 1e6), -1e6)
         derivative = (error - self.prev_error) / dt
         derivative = max(min(derivative, 1e6), -1e6)

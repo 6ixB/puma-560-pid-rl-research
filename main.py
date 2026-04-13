@@ -12,6 +12,8 @@ from trajectory import TrajectoryMode, StaticTrajectory, WaypointTrajectory, Sin
 import roboticstoolbox as rtb
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+import torch
+from lstm_pid_simulation import LSTMPIDTuner
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
@@ -294,6 +296,11 @@ class MainWindow(QtWidgets.QMainWindow):
     def setup_pc_tab(self):
         layout = QtWidgets.QVBoxLayout(self.tab_pc)
 
+        self.pc_auto_tune_check = QtWidgets.QCheckBox("Auto Tune PID (LSTM)")
+        self.pc_auto_tune_check.setChecked(False)
+        self.pc_auto_tune_check.toggled.connect(self._on_auto_tune_toggled)
+        layout.addWidget(self.pc_auto_tune_check)
+
         joints_widget = QtWidgets.QWidget()
         joints_layout = QtWidgets.QVBoxLayout(joints_widget)
         joints_layout.setContentsMargins(0, 0, 0, 0)
@@ -303,6 +310,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.pc_kp_entries = []
         self.pc_ki_entries = []
         self.pc_kd_entries = []
+
+        baseline_pid = [
+            (100.00, 0.96, 10.68),
+            (500.00, 50.00, 100.00),
+            (108.22, 50.00, 15.20),
+            (50.00, 0.49, 5.00),
+            (50.00, 0.57, 4.99),
+            (50.00, 0.50, 5.00)
+        ]
 
         for i in range(6):
             group_box = QtWidgets.QGroupBox(f"Joint {i + 1}")
@@ -319,17 +335,17 @@ class MainWindow(QtWidgets.QMainWindow):
             self.pc_setpoint_entries.append(sp_entry)
             form_layout.addRow("Setpoint [Deg]:", sp_entry)
 
-            kp_entry = QtWidgets.QLineEdit("1.0")
+            kp_entry = QtWidgets.QLineEdit(f"{baseline_pid[i][0]:.2f}")
             kp_entry.setValidator(QtGui.QDoubleValidator())
             self.pc_kp_entries.append(kp_entry)
             form_layout.addRow("Kp:", kp_entry)
 
-            ki_entry = QtWidgets.QLineEdit("0.0")
+            ki_entry = QtWidgets.QLineEdit(f"{baseline_pid[i][1]:.2f}")
             ki_entry.setValidator(QtGui.QDoubleValidator())
             self.pc_ki_entries.append(ki_entry)
             form_layout.addRow("Ki:", ki_entry)
 
-            kd_entry = QtWidgets.QLineEdit("0.0")
+            kd_entry = QtWidgets.QLineEdit(f"{baseline_pid[i][2]:.2f}")
             kd_entry.setValidator(QtGui.QDoubleValidator())
             self.pc_kd_entries.append(kd_entry)
             form_layout.addRow("Kd:", kd_entry)
@@ -487,6 +503,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
         scroll.setWidget(scroll_content)
         layout.addWidget(scroll)
+
+    def _on_auto_tune_toggled(self, checked):
+        for i in range(6):
+            self.pc_kp_entries[i].setEnabled(not checked)
+            self.pc_ki_entries[i].setEnabled(not checked)
+            self.pc_kd_entries[i].setEnabled(not checked)
 
     # ---- Waypoint table helpers ----
     def _wp_add_row(self):
@@ -689,11 +711,30 @@ class MainWindow(QtWidgets.QMainWindow):
 
             # 2) Read PID gains per joint from UI and build PIDValue list
             pid_values: list[PIDValue] = []
-            for i in range(6):
-                Kp = float(self.pc_kp_entries[i].text())
-                Ki = float(self.pc_ki_entries[i].text())
-                Kd = float(self.pc_kd_entries[i].text())
-                pid_values.append(PIDValue(Kp=f64(Kp), Ki=f64(Ki), Kd=f64(Kd)))
+            
+            if self.pc_auto_tune_check.isChecked():
+                # Run LSTM inference
+                model = LSTMPIDTuner(input_size=24, hidden_size=64, num_layers=2, output_size=18, window_size=10)
+                model.eval()
+                # Dummy history
+                dummy_history = torch.randn(1, 10, 24)
+                with torch.no_grad():
+                    predicted_gains = model(dummy_history)
+                    gains = predicted_gains[0].numpy()
+                
+                # Parse gains into Kp, Ki, Kd and update UI
+                for i in range(6):
+                    kp, ki, kd = gains[i*3], gains[i*3+1], gains[i*3+2]
+                    self.pc_kp_entries[i].setText(f"{kp:.2f}")
+                    self.pc_ki_entries[i].setText(f"{ki:.2f}")
+                    self.pc_kd_entries[i].setText(f"{kd:.2f}")
+                    pid_values.append(PIDValue(Kp=f64(kp), Ki=f64(ki), Kd=f64(kd)))
+            else:
+                for i in range(6):
+                    Kp = float(self.pc_kp_entries[i].text())
+                    Ki = float(self.pc_ki_entries[i].text())
+                    Kd = float(self.pc_kd_entries[i].text())
+                    pid_values.append(PIDValue(Kp=f64(Kp), Ki=f64(Ki), Kd=f64(Kd)))
                 
             duration = float(self.pc_duration_entry.text())
             dt = float(self.pc_dt_entry.text())
