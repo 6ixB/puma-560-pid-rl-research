@@ -505,10 +505,8 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(scroll)
 
     def _on_auto_tune_toggled(self, checked):
-        for i in range(6):
-            self.pc_kp_entries[i].setEnabled(not checked)
-            self.pc_ki_entries[i].setEnabled(not checked)
-            self.pc_kd_entries[i].setEnabled(not checked)
+        # We now keep the entries enabled so they act as the baselines for the LSTM!
+        pass
 
     # ---- Waypoint table helpers ----
     def _wp_add_row(self):
@@ -712,29 +710,23 @@ class MainWindow(QtWidgets.QMainWindow):
             # 2) Read PID gains per joint from UI and build PIDValue list
             pid_values: list[PIDValue] = []
             
+            lstm_model = None
             if self.pc_auto_tune_check.isChecked():
-                # Run LSTM inference
-                model = LSTMPIDTuner(input_size=24, hidden_size=64, num_layers=2, output_size=18, window_size=10)
-                model.eval()
-                # Dummy history
-                dummy_history = torch.randn(1, 10, 24)
-                with torch.no_grad():
-                    predicted_gains = model(dummy_history)
-                    gains = predicted_gains[0].numpy()
-                
-                # Parse gains into Kp, Ki, Kd and update UI
-                for i in range(6):
-                    kp, ki, kd = gains[i*3], gains[i*3+1], gains[i*3+2]
-                    self.pc_kp_entries[i].setText(f"{kp:.2f}")
-                    self.pc_ki_entries[i].setText(f"{ki:.2f}")
-                    self.pc_kd_entries[i].setText(f"{kd:.2f}")
-                    pid_values.append(PIDValue(Kp=f64(kp), Ki=f64(ki), Kd=f64(kd)))
-            else:
-                for i in range(6):
-                    Kp = float(self.pc_kp_entries[i].text())
-                    Ki = float(self.pc_ki_entries[i].text())
-                    Kd = float(self.pc_kd_entries[i].text())
-                    pid_values.append(PIDValue(Kp=f64(Kp), Ki=f64(Ki), Kd=f64(Kd)))
+                # Load trained LSTM for real-time inference during simulation
+                try:
+                    lstm_model = LSTMPIDTuner(input_size=24, hidden_size=64, num_layers=2, output_size=18, window_size=10)
+                    lstm_model.load_state_dict(torch.load('lstm_supervised_weights.pth'))
+                    lstm_model.eval()
+                except Exception as e:
+                    self.show_error_message("LSTM Error", f"Could not load weights: {e}")
+                    return
+            
+            # Still read the baselines from user input
+            for i in range(6):
+                Kp = float(self.pc_kp_entries[i].text())
+                Ki = float(self.pc_ki_entries[i].text())
+                Kd = float(self.pc_kd_entries[i].text())
+                pid_values.append(PIDValue(Kp=f64(Kp), Ki=f64(Ki), Kd=f64(Kd)))
                 
             duration = float(self.pc_duration_entry.text())
             dt = float(self.pc_dt_entry.text())
@@ -760,6 +752,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 dt=dt,
                 q0=q0_rad,
                 trajectory=trajectory,
+                lstm_model=lstm_model,
             )
 
             active_joints = [i for i, chk in enumerate(self.pc_joint_checks) if chk.isChecked()]
