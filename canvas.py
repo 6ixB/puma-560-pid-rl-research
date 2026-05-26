@@ -13,6 +13,19 @@ except OSError:
 plt.rcParams['figure.dpi'] = 100
 plt.rcParams['savefig.dpi'] = 300
 
+# Make all plot text clearer and solid black
+plt.rcParams.update({
+    'text.color': 'black',
+    'axes.labelcolor': 'black',
+    'axes.titlecolor': 'black',
+    'xtick.color': 'black',
+    'ytick.color': 'black',
+    'xtick.labelcolor': 'black',
+    'ytick.labelcolor': 'black',
+    'legend.edgecolor': '#cccccc',
+    'legend.facecolor': '#ffffff',
+})
+
 
 class MplCanvas(FigureCanvas):
     """
@@ -190,7 +203,8 @@ class MplCanvas(FigureCanvas):
         self.draw_idle()
 
     def plot_pc_results(
-        self, t_steps, q_values, error_values, u_values, torque_values, p_values, i_values, d_values, setpoints, active_joints, active_vars
+        self, t_steps, q_values, error_values, u_values, torque_values, p_values, i_values, d_values, setpoints, active_joints, active_vars,
+        baseline_results=None
     ):
         """Plots PID Controller results: Overlay of selected variables for active joints, separated by joint."""
         n_joints = len(active_joints)
@@ -203,9 +217,9 @@ class MplCanvas(FigureCanvas):
 
         # Color map for variables
         colors = {
-            "Angle": "#1f77b4",
+            "Angle": "#0052cc",      # Royal Blue for Response (LSTM)
             "Setpoint": "#d62728",
-            "Error": "#ff7f0e",
+            "Error": "#00a3c4",      # Teal for Err (LSTM)
             "U(k)": "#9467bd",
             "Torque(Nm)": "#2ca02c",
             "P": "#e377c2",
@@ -221,7 +235,12 @@ class MplCanvas(FigureCanvas):
             has_plotted = False
 
             if "Angle" in active_vars:
-                ax.plot(t_steps, q_values[j], label=f"Output", color=colors["Angle"], linestyle=ls, linewidth=1.5)
+                label_prefix = "Response (LSTM)" if baseline_results else "Angle"
+                ax.plot(t_steps, q_values[j], label=label_prefix, color=colors["Angle"], linestyle=ls, linewidth=1.5)
+                if baseline_results:
+                    # baseline_results is (t_steps, q_values, error_values, u_values, torque_values, p_values, i_values, d_values, setpoint_values)
+                    bq_values = baseline_results[1]
+                    ax.plot(t_steps, bq_values[j], label="Response (Base)", color="#ff5630", linestyle="-", linewidth=1.5, alpha=0.9)  # Coral Red for high contrast
                 has_plotted = True
             
             if "Setpoint" in active_vars:
@@ -229,7 +248,11 @@ class MplCanvas(FigureCanvas):
                 has_plotted = True
 
             if "Error" in active_vars:
-                ax.plot(t_steps, error_values[j], label=f"Err", color=colors["Error"], linestyle=ls, linewidth=1.5)
+                label_prefix = "Err (LSTM)" if baseline_results else "Err"
+                ax.plot(t_steps, error_values[j], label=label_prefix, color=colors["Error"], linestyle=ls, linewidth=1.5)
+                if baseline_results:
+                    berr_values = baseline_results[2]
+                    ax.plot(t_steps, berr_values[j], label="Err (Base)", color="#ffab00", linestyle="-", linewidth=1.5, alpha=0.9)  # Amber/Gold for high contrast
                 has_plotted = True
 
             if "U(k)" in active_vars:
@@ -253,7 +276,7 @@ class MplCanvas(FigureCanvas):
                 has_plotted = True
 
             if has_plotted:
-                ax.set_ylabel(f"J{j+1}", fontsize=12)
+                ax.set_ylabel(f"J{j+1} (Deg)", fontsize=12)
                 # Only show legend on the top plot to save space, or show on all if preferred
                 pass  # We will do it per-axis but position it well
                 ax.legend(loc="center left", bbox_to_anchor=(1.05, 0.5), fontsize="large")
@@ -269,7 +292,8 @@ class MplCanvas(FigureCanvas):
         self.draw()
 
     def plot_pc_results_animated(
-        self, t_steps, q_values, error_values, u_values, torque_values, p_values, i_values, d_values, setpoints, active_joints, active_vars, frame_idx
+        self, t_steps, q_values, error_values, u_values, torque_values, p_values, i_values, d_values, setpoints, active_joints, active_vars, frame_idx,
+        baseline_results=None
     ):
         """Animates PID Controller results: Plotted up to frame_idx."""
         n_joints = len(active_joints)
@@ -280,9 +304,9 @@ class MplCanvas(FigureCanvas):
 
         # Use the same color map
         colors = {
-            "Angle": "#1f77b4",
+            "Angle": "#0052cc",      # Royal Blue for Response (LSTM)
             "Setpoint": "#d62728",
-            "Error": "#ff7f0e",
+            "Error": "#00a3c4",      # Teal for Err (LSTM)
             "U(k)": "#9467bd",
             "Torque(Nm)": "#2ca02c",
             "P": "#e377c2",
@@ -298,7 +322,11 @@ class MplCanvas(FigureCanvas):
             has_plotted = False
 
             if "Angle" in active_vars:
-                ax.plot(t_sub, q_values[j][:frame_idx], label=f"Angle", color=colors["Angle"], linestyle=ls, linewidth=1.5)
+                label_prefix = "Response (LSTM)" if baseline_results else "Angle"
+                ax.plot(t_sub, q_values[j][:frame_idx], label=label_prefix, color=colors["Angle"], linestyle=ls, linewidth=1.5)
+                if baseline_results:
+                    bq_values = baseline_results[1]
+                    ax.plot(t_sub, bq_values[j][:frame_idx], label="Response (Base)", color="#ff5630", linestyle="-", linewidth=1.5, alpha=0.9)  # Coral Red for high contrast
                 has_plotted = True
             
             if "Setpoint" in active_vars:
@@ -306,7 +334,11 @@ class MplCanvas(FigureCanvas):
                 has_plotted = True
 
             if "Error" in active_vars:
-                ax.plot(t_sub, error_values[j][:frame_idx], label=f"Err", color=colors["Error"], linestyle=ls, linewidth=1.5)
+                label_prefix = "Err (LSTM)" if baseline_results else "Err"
+                ax.plot(t_sub, error_values[j][:frame_idx], label=label_prefix, color=colors["Error"], linestyle=ls, linewidth=1.5)
+                if baseline_results:
+                    berr_values = baseline_results[2]
+                    ax.plot(t_sub, berr_values[j][:frame_idx], label="Err (Base)", color="#ffab00", linestyle="-", linewidth=1.5, alpha=0.9)  # Amber/Gold for high contrast
                 has_plotted = True
 
             if "U(k)" in active_vars:
@@ -330,36 +362,37 @@ class MplCanvas(FigureCanvas):
                 has_plotted = True
 
             if has_plotted:
-                ax.set_ylabel(f"J{j+1}", fontsize=12)
+                ax.set_ylabel(f"J{j+1} (Deg)", fontsize=12)
                 ax.set_xlim(t_steps[0], t_steps[-1])
                 
                 # Determine min and max Y for better scaling
                 y_min = float("inf")
                 y_max = float("-inf")
+                
+                # Helper to update y_min/y_max
+                def update_limits(vals):
+                    nonlocal y_min, y_max
+                    y_min = min(y_min, min(vals))
+                    y_max = max(y_max, max(vals))
+
                 if "Angle" in active_vars:
-                    y_min = min(y_min, min(q_values[j]))
-                    y_max = max(y_max, max(q_values[j]))
+                    update_limits(q_values[j])
+                    if baseline_results: update_limits(baseline_results[1][j])
                 if "Setpoint" in active_vars:
-                    y_min = min(y_min, min(setpoints[j]))
-                    y_max = max(y_max, max(setpoints[j]))
+                    update_limits(setpoints[j])
                 if "Error" in active_vars:
-                    y_min = min(y_min, min(error_values[j]))
-                    y_max = max(y_max, max(error_values[j]))
+                    update_limits(error_values[j])
+                    if baseline_results: update_limits(baseline_results[2][j])
                 if "U(k)" in active_vars:
-                    y_min = min(y_min, min(u_values[j]))
-                    y_max = max(y_max, max(u_values[j]))
+                    update_limits(u_values[j])
                 if "Torque(Nm)" in active_vars:
-                    y_min = min(y_min, min(torque_values[j]))
-                    y_max = max(y_max, max(torque_values[j]))
+                    update_limits(torque_values[j])
                 if "P" in active_vars:
-                    y_min = min(y_min, min(p_values[j]))
-                    y_max = max(y_max, max(p_values[j]))
+                    update_limits(p_values[j])
                 if "I" in active_vars:
-                    y_min = min(y_min, min(i_values[j]))
-                    y_max = max(y_max, max(i_values[j]))
+                    update_limits(i_values[j])
                 if "D" in active_vars:
-                    y_min = min(y_min, min(d_values[j]))
-                    y_max = max(y_max, max(d_values[j]))
+                    update_limits(d_values[j])
                 
                 margin = (y_max - y_min) * 0.1
                 if margin == 0:
@@ -393,7 +426,7 @@ class MplCanvas(FigureCanvas):
         ax.axhline(45, color="r", linestyle="--", label="Setpoint (45 deg)", alpha=0.7)
 
         ax.set_xlabel("Time (s)")
-        ax.set_ylabel("Joint 2 Angle (deg)")
+        ax.set_ylabel("Joint 2 Response (deg)")
         ax.legend(loc="best")
         ax.grid(True)
 

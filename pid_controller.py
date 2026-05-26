@@ -161,7 +161,7 @@ def plot_pid_controller_output(t_steps, q_values, u_values, setpoints, p_values,
         linestyle="--",
         label="Setpoint",
     )
-    ax1.set_ylabel("Angle (deg)")
+    ax1.set_ylabel("Response (deg)")
     ax1.set_title(f"Joint {joint_to_plot + 1} Tracking")
     ax1.legend(loc="upper right")
     ax1.grid()

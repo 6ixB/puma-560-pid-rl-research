@@ -14,6 +14,7 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 import torch
 from lstm_pid_simulation import LSTMPIDTuner
+from generate_offline_data import get_baseline_gains
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
@@ -61,37 +62,85 @@ class MainWindow(QtWidgets.QMainWindow):
         plot_layout.addWidget(self.plot_canvas)
         splitter.addWidget(plot_widget)
 
-        # Bottom area: 3D Robot View
+        # Bottom area: 3D Robot View (Split Left/Right)
         robot_widget = QtWidgets.QWidget()
-        robot_layout = QtWidgets.QVBoxLayout(robot_widget)
-        
-        # Create a matplotlib figure for RTB
-        self.fig_3d = Figure(figsize=(8, 4), dpi=100)
-        self.canvas_3d = FigureCanvas(self.fig_3d)
+        robot_view_layout = QtWidgets.QHBoxLayout(robot_widget)
         
         # Mock the manager for roboticstoolbox compatibility
         class DummyManager:
             def set_window_title(self, title):
                 pass
-        self.canvas_3d.manager = DummyManager()
-        self.fig_3d.number = 1
         
-        robot_layout.addWidget(self.canvas_3d)
-        splitter.addWidget(robot_widget)
+        # Left Side Container
+        left_container = QtWidgets.QWidget()
+        left_layout = QtWidgets.QVBoxLayout(left_container)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.fig_start = Figure(figsize=(4, 4), dpi=100)
+        self.canvas_start = FigureCanvas(self.fig_start)
+        self.canvas_start.manager = DummyManager()
+        self.fig_start.number = 1
+        left_layout.addWidget(self.canvas_start)
+        
+        btn_save_start = QtWidgets.QPushButton("Save Starting Point Image")
+        btn_save_start.clicked.connect(self.save_start_image)
+        left_layout.addWidget(btn_save_start)
+        
+        robot_view_layout.addWidget(left_container)
 
+        # Right Side Container
+        right_container = QtWidgets.QWidget()
+        right_layout = QtWidgets.QVBoxLayout(right_container)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.fig_end = Figure(figsize=(4, 4), dpi=100)
+        self.canvas_end = FigureCanvas(self.fig_end)
+        self.canvas_end.manager = DummyManager()
+        self.fig_end.number = 2
+        right_layout.addWidget(self.canvas_end)
+        
+        btn_save_end = QtWidgets.QPushButton("Save Simulation Image")
+        btn_save_end.clicked.connect(self.save_end_image)
+        right_layout.addWidget(btn_save_end)
+        
+        robot_view_layout.addWidget(right_container)
+
+        splitter.addWidget(robot_widget)
         main_layout.addWidget(splitter)
         
-        # Initialize Robot
+        # Initialize Robots
         self.robot = rtb.models.DH.Puma560()
+        self.robot.name = "Puma560_Sim"
+        self.robot_start = rtb.models.DH.Puma560()
+        self.robot_start.name = "Puma560_Start"
         # Setup the plot via plotting method but passing False to block ensures we don't freeze
         self._init_3d_plot()
 
     def _init_3d_plot(self):
-        # Initial robot pose
-        self.env = self.robot.plot([0, 0, 0, 0, 0, 0], backend='pyplot', fig=self.fig_3d, block=False)
-        self.canvas_3d.draw()
+        from roboticstoolbox.backends.PyPlot import PyPlot
+        
+        # Initialize robots on their respective figures
+        q_init = np.array([0, 0, 0, 0, 0, 0])
+        
+        self.robot_start.q = q_init
+        self.env_start = PyPlot()
+        self.env_start.launch(name="Starting Point", fig=self.fig_start)
+        self.env_start.add(self.robot_start)
+        
+        self.robot.q = q_init
+        self.env = PyPlot()
+        self.env.launch(name="Ending Point (Simulation)", fig=self.fig_end)
+        self.env.add(self.robot)
+        
+        if hasattr(self.env_start, 'ax'):
+            self.env_start.ax.set_title("Starting Point", fontsize=10)
+        if hasattr(self.env, 'ax'):
+            self.env.ax.set_title("Ending Point (Simulation)", fontsize=10)
+        
+        self.canvas_start.draw()
+        self.canvas_end.draw()
 
-    def animate_3d(self, t, q_trajectory, full_results=None, animate_robot=True, animate_plot=True):
+    def animate_3d(self, t, q_trajectory, full_results=None, animate_robot=True, animate_plot=True, q_init_deg=None):
         """Helper to animate the robot 3D view and/or plot drawing given a trajectory"""
         if q_trajectory is None or len(q_trajectory) == 0:
             return
@@ -115,10 +164,21 @@ class MainWindow(QtWidgets.QMainWindow):
         for i in range(0, len(q_trajectory), step_sz):
             try:
                 if animate_robot:
+                    # Update Starting Point robot (keep at initial position)
+                    if q_init_deg is not None:
+                        self.robot_start.q = np.deg2rad(q_init_deg)
+                    else:
+                        self.robot_start.q = np.deg2rad(q_trajectory[0])
+                    if self.env_start:
+                        self.env_start.step(0.01)
+                        
+                    # Update Ending Point / Current simulation robot
                     self.robot.q = np.deg2rad(q_trajectory[i])
                     if self.env:
                         self.env.step(0.01)
-                    self.canvas_3d.draw_idle()
+                    
+                    self.canvas_start.draw_idle()
+                    self.canvas_end.draw_idle()
                 
                 # Animate Graph if active data is provided and requested
                 if animate_plot and res_type:
@@ -129,8 +189,9 @@ class MainWindow(QtWidgets.QMainWindow):
                         (t_id, q_id, qd_id, qdd_id, tau_id, modes_id) = res_data
                         self.plot_canvas.plot_id_results_animated(t_id, q_id, qd_id, qdd_id, tau_id, modes_id, frame_idx=i+1)
                     elif res_type == 'pid':
-                        (q_v, err_v, u_v, tq_v, p_v, i_v, d_v, sp_v, joints, vars) = res_data
-                        self.plot_canvas.plot_pc_results_animated(t, q_v, err_v, u_v, tq_v, p_v, i_v, d_v, sp_v, joints, vars, frame_idx=i+1)
+                        # Unpack with new baseline_results at the end
+                        *main_data, joints, vars, baseline_res = res_data
+                        self.plot_canvas.plot_pc_results_animated(t, *main_data, joints, vars, frame_idx=i+1, baseline_results=baseline_res)
             except Exception as e:
                 print(f"Animation step error: {e}")
             QtCore.QCoreApplication.processEvents()
@@ -138,10 +199,15 @@ class MainWindow(QtWidgets.QMainWindow):
         # Final frame
         final_idx = len(q_trajectory)
         if animate_robot:
+            if q_init_deg is not None:
+                self.robot_start.q = np.deg2rad(q_init_deg)
+            else:
+                self.robot_start.q = np.deg2rad(q_trajectory[0])
             self.robot.q = np.deg2rad(q_trajectory[-1])
-            if self.env:
-                self.env.step(0.01)
-            self.canvas_3d.draw_idle()
+            if self.env_start: self.env_start.step(0.01)
+            if self.env: self.env.step(0.01)
+            self.canvas_start.draw_idle()
+            self.canvas_end.draw_idle()
 
         if animate_plot and res_type:
             if res_type == 'fd':
@@ -149,7 +215,8 @@ class MainWindow(QtWidgets.QMainWindow):
             elif res_type == 'id':
                 self.plot_canvas.plot_id_results_animated(*res_data, frame_idx=final_idx)
             elif res_type == 'pid':
-                self.plot_canvas.plot_pc_results_animated(t, *res_data, frame_idx=final_idx)
+                *main_data, joints, vars, baseline_res = res_data
+                self.plot_canvas.plot_pc_results_animated(t, *main_data, joints, vars, frame_idx=final_idx, baseline_results=baseline_res)
 
     def _create_joint_input_group(self, title, defaults):
         group_box = QtWidgets.QGroupBox(title)
@@ -301,6 +368,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self.pc_auto_tune_check.toggled.connect(self._on_auto_tune_toggled)
         layout.addWidget(self.pc_auto_tune_check)
 
+        self.pc_compare_baseline_check = QtWidgets.QCheckBox("Compare with Baseline")
+        self.pc_compare_baseline_check.setChecked(False)
+        self.pc_compare_baseline_check.setEnabled(False) # Only enabled when LSTM is on
+        layout.addWidget(self.pc_compare_baseline_check)
+
+        # Preset Selection
+        preset_box = QtWidgets.QGroupBox("Gain Presets")
+        preset_layout = QtWidgets.QHBoxLayout(preset_box)
+        self.pc_preset_combo = QtWidgets.QComboBox()
+        self.pc_preset_combo.addItems(["Select Preset...", "Baseline Setting A", "Baseline Setting B"])
+        self.pc_preset_combo.currentIndexChanged.connect(self._on_preset_selected)
+        preset_layout.addWidget(self.pc_preset_combo)
+        layout.addWidget(preset_box)
+
         joints_widget = QtWidgets.QWidget()
         joints_layout = QtWidgets.QVBoxLayout(joints_widget)
         joints_layout.setContentsMargins(0, 0, 0, 0)
@@ -382,7 +463,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.pc_wp_table_stack = QtWidgets.QStackedWidget()
         for i in range(6):
             table = QtWidgets.QTableWidget(2, 2)
-            table.setHorizontalHeaderLabels(["Time (s)", "Angle (Deg)"])
+            table.setHorizontalHeaderLabels(["Time (s)", "Response (Deg)"])
             table.horizontalHeader().setStretchLastSection(True)
             table.setItem(0, 0, QtWidgets.QTableWidgetItem("0.0"))
             table.setItem(0, 1, QtWidgets.QTableWidgetItem("0.0"))
@@ -506,7 +587,23 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_auto_tune_toggled(self, checked):
         # We now keep the entries enabled so they act as the baselines for the LSTM!
-        pass
+        self.pc_compare_baseline_check.setEnabled(checked)
+        if not checked:
+            self.pc_compare_baseline_check.setChecked(False)
+
+    def _on_preset_selected(self, index):
+        if index == 0:  # "Select Preset..."
+            return
+            
+        setting = 'A' if index == 1 else 'B'
+        try:
+            gains = get_baseline_gains(setting)
+            for i in range(6):
+                self.pc_kp_entries[i].setText(f"{gains[i].Kp:.2f}")
+                self.pc_ki_entries[i].setText(f"{gains[i].Ki:.2f}")
+                self.pc_kd_entries[i].setText(f"{gains[i].Kd:.2f}")
+        except Exception as e:
+            self.show_error_message("Preset Error", f"Failed to load preset: {e}")
 
     # ---- Waypoint table helpers ----
     def _wp_add_row(self):
@@ -579,17 +676,22 @@ class MainWindow(QtWidgets.QMainWindow):
                 if not animate_plot:
                     self.plot_canvas.plot_fd_results(t, q, qd, qdd)
                 if not animate_robot:
+                    self.robot_start.q = np.deg2rad(q0)
                     self.robot.q = np.deg2rad(q[-1])
+                    if self.env_start: self.env_start.step(0.01)
                     if self.env: self.env.step(0.01)
-                    self.canvas_3d.draw_idle()
+                    self.canvas_start.draw_idle()
+                    self.canvas_end.draw_idle()
                 
-                self.animate_3d(t, q, full_results=full_results, animate_robot=animate_robot, animate_plot=animate_plot)
+                self.animate_3d(t, q, full_results=full_results, animate_robot=animate_robot, animate_plot=animate_plot, q_init_deg=q0)
             else:
                 self.plot_canvas.plot_fd_results(t, q, qd, qdd)
+                self.robot_start.q = np.deg2rad(q0)
+                if self.env_start: self.env_start.step(0.01)
                 self.robot.q = np.deg2rad(q[-1])
-                if self.env:
-                    self.env.step(0.01)
-                self.canvas_3d.draw_idle()
+                if self.env: self.env.step(0.01)
+                self.canvas_start.draw_idle()
+                self.canvas_end.draw_idle()
 
         except Exception as e:
             self.show_error_message("Simulation Error", f"An error occurred:\n{e}")
@@ -637,17 +739,22 @@ class MainWindow(QtWidgets.QMainWindow):
                 if not animate_plot:
                     self.plot_canvas.plot_id_results(t, q, qd, qdd, torques, active_modes)
                 if not animate_robot:
+                    self.robot_start.q = np.deg2rad(q_init_deg)
                     self.robot.q = np.deg2rad(q[-1])
+                    if self.env_start: self.env_start.step(0.01)
                     if self.env: self.env.step(0.01)
-                    self.canvas_3d.draw_idle()
+                    self.canvas_start.draw_idle()
+                    self.canvas_end.draw_idle()
                 
-                self.animate_3d(t, q, full_results=full_results, animate_robot=animate_robot, animate_plot=animate_plot)
+                self.animate_3d(t, q, full_results=full_results, animate_robot=animate_robot, animate_plot=animate_plot, q_init_deg=q_init_deg)
             else:
                 self.plot_canvas.plot_id_results(t, q, qd, qdd, torques, active_modes)
+                self.robot_start.q = np.deg2rad(q_init_deg)
+                if self.env_start: self.env_start.step(0.01)
                 self.robot.q = np.deg2rad(q[-1])
-                if self.env:
-                    self.env.step(0.01)
-                self.canvas_3d.draw_idle()
+                if self.env: self.env.step(0.01)
+                self.canvas_start.draw_idle()
+                self.canvas_end.draw_idle()
 
         except Exception as e:
             self.show_error_message("Simulation Error", f"An error occurred:\n{e}")
@@ -755,6 +862,19 @@ class MainWindow(QtWidgets.QMainWindow):
                 lstm_model=lstm_model,
             )
 
+            # Optional: Run Baseline for Comparison
+            baseline_results = None
+            if self.pc_auto_tune_check.isChecked() and self.pc_compare_baseline_check.isChecked():
+                baseline_results = run_pid_controller(
+                    setpoints=setpoints_rad,
+                    pid_values=pid_values,
+                    duration=duration,
+                    dt=dt,
+                    q0=q0_rad,
+                    trajectory=trajectory,
+                    lstm_model=None,
+                )
+
             active_joints = [i for i, chk in enumerate(self.pc_joint_checks) if chk.isChecked()]
             active_vars = [v for v, chk in self.pc_var_checks.items() if chk.isChecked()]
 
@@ -765,7 +885,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if animate_robot or animate_plot:
                 # q_values from pc is shape (6, N), animate_3d expects (N, 6)
                 q_traj = np.array(q_values).T
-                full_results = (q_values, error_values, u_values, torque_values, p_values, i_values, d_values, setpoint_values, active_joints, active_vars)
+                full_results = (q_values, error_values, u_values, torque_values, p_values, i_values, d_values, setpoint_values, active_joints, active_vars, baseline_results)
                 
                 # If plot animation is OFF but robot animation is ON, plot the full static results first
                 if not animate_plot:
@@ -781,16 +901,18 @@ class MainWindow(QtWidgets.QMainWindow):
                         setpoints=setpoint_values,
                         active_joints=active_joints,
                         active_vars=active_vars,
+                        baseline_results=baseline_results
                     )
                 
                 # If robot animation is OFF but plot animation is ON, set robot to final pose first
                 if not animate_robot:
-                    self.robot.q = np.array(q_values)[:, -1]
+                    self.robot.q = np.deg2rad(np.array(q_values)[:, -1])
                     if self.env:
                         self.env.step(0.01)
-                    self.canvas_3d.draw_idle()
+                    self.canvas_start.draw_idle()
+                    self.canvas_end.draw_idle()
 
-                self.animate_3d(t_steps, q_traj, full_results=full_results, animate_robot=animate_robot, animate_plot=animate_plot)
+                self.animate_3d(t_steps, q_traj, full_results=full_results, animate_robot=animate_robot, animate_plot=animate_plot, q_init_deg=q0_deg)
             else:
                 self.plot_canvas.plot_pc_results(
                     t_steps=t_steps,
@@ -804,11 +926,14 @@ class MainWindow(QtWidgets.QMainWindow):
                     setpoints=setpoint_values,
                     active_joints=active_joints,
                     active_vars=active_vars,
+                    baseline_results=baseline_results
                 )
-                self.robot.q = np.array(q_values)[:, -1]
-                if self.env:
-                    self.env.step(0.01)
-                self.canvas_3d.draw_idle()
+                self.robot_start.q = np.deg2rad(q0_deg)
+                self.robot.q = np.deg2rad(np.array(q_values)[:, -1])
+                if self.env_start: self.env_start.step(0.01)
+                if self.env: self.env.step(0.01)
+                self.canvas_start.draw_idle()
+                self.canvas_end.draw_idle()
 
         except Exception as e:
             self.show_error_message("PID Controller Error", f"An error occurred:\n{e}")
@@ -891,6 +1016,26 @@ class MainWindow(QtWidgets.QMainWindow):
         finally:
             self.tuning_run_button.setText("Run Tuning Demo")
             self.tuning_run_button.setEnabled(True)
+
+    def save_start_image(self):
+        file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save Starting Point Image", "", "PNG Image (*.png);;JPEG Image (*.jpg);;PDF Document (*.pdf)"
+        )
+        if file_path:
+            try:
+                self.fig_start.savefig(file_path, bbox_inches='tight')
+            except Exception as e:
+                self.show_error_message("Save Error", f"Failed to save image:\n{e}")
+
+    def save_end_image(self):
+        file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save Simulation Image", "", "PNG Image (*.png);;JPEG Image (*.jpg);;PDF Document (*.pdf)"
+        )
+        if file_path:
+            try:
+                self.fig_end.savefig(file_path, bbox_inches='tight')
+            except Exception as e:
+                self.show_error_message("Save Error", f"Failed to save image:\n{e}")
 
     def show_error_message(self, title, message):
         msg_box = QtWidgets.QMessageBox(self)

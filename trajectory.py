@@ -27,6 +27,10 @@ class TrajectoryGenerator:
         """Return a 6-element setpoint vector **in radians** at time *t*."""
         raise NotImplementedError
 
+    def get_info(self) -> dict:
+        """Return human-readable metadata about the trajectory."""
+        return {}
+
 
 class StaticTrajectory(TrajectoryGenerator):
     """Constant setpoint for each joint (replicates the original behaviour)."""
@@ -36,6 +40,12 @@ class StaticTrajectory(TrajectoryGenerator):
 
     def get_setpoint(self, t: float) -> NDArray[f64]:  # noqa: ARG002
         return self._sp
+
+    def get_info(self) -> dict:
+        return {
+            "Mode": "Static",
+            "Setpoints (Deg)": [round(float(np.rad2deg(s)), 2) for s in self._sp]
+        }
 
 
 class WaypointTrajectory(TrajectoryGenerator):
@@ -68,6 +78,15 @@ class WaypointTrajectory(TrajectoryGenerator):
             # joints without waypoints default to 0
         return sp
 
+    def get_info(self) -> dict:
+        summary = []
+        for i in range(len(self._times)):
+            summary.append(f"J{i+1}: {len(self._times[i])} waypoints")
+        return {
+            "Mode": "Waypoints",
+            "Summary": ", ".join(summary)
+        }
+
 
 class SineTrajectory(TrajectoryGenerator):
     """
@@ -98,3 +117,13 @@ class SineTrajectory(TrajectoryGenerator):
         for i, (amp, freq, offset, phase) in enumerate(self._params):
             sp[i] = offset + amp * np.sin(2.0 * np.pi * freq * t + phase)
         return sp
+
+    def get_info(self) -> dict:
+        summary = []
+        for i, (amp, freq, offset, phase) in enumerate(self._params):
+            if abs(amp) > 1e-6:
+                summary.append(f"J{i+1}: A={np.rad2deg(amp):.1f}°, f={freq:.1f}Hz, off={np.rad2deg(offset):.1f}°, ph={np.rad2deg(phase):.1f}°")
+        return {
+            "Mode": "Sine Wave",
+            "Params": " | ".join(summary) if summary else "All zeros"
+        }

@@ -110,7 +110,7 @@ def simulate_with_lstm(model_path='lstm_supervised_weights.pth', duration=10.0, 
     plt.subplot(3, 1, 1)
     plt.plot(t_steps, setpoints[joint_to_plot], 'r--', label='Target (J2)')
     plt.plot(t_steps, q_values[joint_to_plot], 'b', label='LSTM Response (J2)')
-    plt.ylabel('Angle (deg)')
+    plt.ylabel('Response (deg)')
     plt.title('Residual Gain Tuning Performance (LSTM + Baseline)')
     plt.legend()
     plt.grid()
