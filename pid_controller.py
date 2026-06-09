@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 
-import torch
 import matplotlib.pyplot as plt
 import numpy as np
 from numpy import float64 as f64
@@ -51,7 +50,6 @@ def run_pid_controller(
     dt: float = 0.01,
     q0: NDArray[f64] | None = None,
     trajectory: TrajectoryGenerator | None = None,
-    lstm_model=None,
 ):
     robot = models.DH.Puma560()
 
@@ -88,9 +86,6 @@ def run_pid_controller(
     d_values: list[list[f64]] = [[] for _ in range(6)]
     setpoint_values: list[list[f64]] = [[] for _ in range(6)]
 
-    if lstm_model is not None:
-        history = np.zeros((10, 24), dtype=np.float32)
-
     # ---------------- Simulation Loop ----------------
     for t_now in t_steps:
         # Update each PID controller's setpoint from the trajectory
@@ -100,23 +95,6 @@ def run_pid_controller(
         M: NDArray[f64] = robot.inertia(q)  # pyright: ignore[reportAttributeAccessIssue]
         C: NDArray[f64] = robot.coriolis(q, qd)  # pyright: ignore[reportAttributeAccessIssue]
         G: NDArray[f64] = robot.gravload(q)  # pyright: ignore[reportAttributeAccessIssue]
-
-        if lstm_model is not None:
-            err = np.array(current_sp) - q
-            integrals = np.array([p.integral for p in pids], dtype=f64)
-            features = np.concatenate([q, qd, err, integrals]).astype(np.float32)
-            history[:-1] = history[1:]
-            history[-1] = features
-            
-            with torch.no_grad():
-                hist_tensor = torch.tensor(history).unsqueeze(0)
-                scaled_deltas = lstm_model.get_deltas(hist_tensor)[0].numpy()
-                
-            for i in range(6):
-                # Safety Clamp: Gains must NEVER be negative, as that causes instant explosive positive feedback!
-                pids[i].Kp = max(0.0, f64(pid_values[i].Kp) + scaled_deltas[i*3+0])
-                pids[i].Ki = max(0.0, f64(pid_values[i].Ki) + scaled_deltas[i*3+1])
-                pids[i].Kd = max(0.0, f64(pid_values[i].Kd) + scaled_deltas[i*3+2])
 
         pid_outputs = [pids[i].update(q[i], dt) for i in range(6)]
         

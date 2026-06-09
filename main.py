@@ -12,8 +12,6 @@ from trajectory import TrajectoryMode, StaticTrajectory, WaypointTrajectory, Sin
 import roboticstoolbox as rtb
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-import torch
-from lstm_pid_simulation import LSTMPIDTuner
 from generate_offline_data import get_baseline_gains
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
@@ -363,15 +361,13 @@ class MainWindow(QtWidgets.QMainWindow):
     def setup_pc_tab(self):
         layout = QtWidgets.QVBoxLayout(self.tab_pc)
 
-        self.pc_auto_tune_check = QtWidgets.QCheckBox("Auto Tune PID (LSTM)")
-        self.pc_auto_tune_check.setChecked(False)
-        self.pc_auto_tune_check.toggled.connect(self._on_auto_tune_toggled)
-        layout.addWidget(self.pc_auto_tune_check)
-
-        self.pc_compare_baseline_check = QtWidgets.QCheckBox("Compare with Baseline")
-        self.pc_compare_baseline_check.setChecked(False)
-        self.pc_compare_baseline_check.setEnabled(False) # Only enabled when LSTM is on
-        layout.addWidget(self.pc_compare_baseline_check)
+        # Simulation Engine Selection
+        engine_box = QtWidgets.QGroupBox("Simulation Engine")
+        engine_layout = QtWidgets.QHBoxLayout(engine_box)
+        self.pc_engine_combo = QtWidgets.QComboBox()
+        self.pc_engine_combo.addItems(["Legacy (Robotics Toolbox)", "TD3 RL (Setting A)", "TD3 RL (Setting B)"])
+        engine_layout.addWidget(self.pc_engine_combo)
+        layout.addWidget(engine_box)
 
         # Preset Selection
         preset_box = QtWidgets.QGroupBox("Gain Presets")
@@ -584,12 +580,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
         scroll.setWidget(scroll_content)
         layout.addWidget(scroll)
-
-    def _on_auto_tune_toggled(self, checked):
-        # We now keep the entries enabled so they act as the baselines for the LSTM!
-        self.pc_compare_baseline_check.setEnabled(checked)
-        if not checked:
-            self.pc_compare_baseline_check.setChecked(False)
 
     def _on_preset_selected(self, index):
         if index == 0:  # "Select Preset..."
@@ -817,17 +807,6 @@ class MainWindow(QtWidgets.QMainWindow):
             # 2) Read PID gains per joint from UI and build PIDValue list
             pid_values: list[PIDValue] = []
             
-            lstm_model = None
-            if self.pc_auto_tune_check.isChecked():
-                # Load trained LSTM for real-time inference during simulation
-                try:
-                    lstm_model = LSTMPIDTuner(input_size=24, hidden_size=64, num_layers=2, output_size=18, window_size=10)
-                    lstm_model.load_state_dict(torch.load('lstm_supervised_weights.pth'))
-                    lstm_model.eval()
-                except Exception as e:
-                    self.show_error_message("LSTM Error", f"Could not load weights: {e}")
-                    return
-            
             # Still read the baselines from user input
             for i in range(6):
                 Kp = float(self.pc_kp_entries[i].text())
@@ -842,38 +821,53 @@ class MainWindow(QtWidgets.QMainWindow):
             trajectory = self._build_trajectory(setpoints_rad, duration)
 
             # 4) Run simulation
-            (
-                t_steps,
-                q_values,
-                error_values,
-                u_values,
-                torque_values,
-                p_values,
-                i_values,
-                d_values,
-                setpoint_values,
-            ) = run_pid_controller(
-                setpoints=setpoints_rad,
-                pid_values=pid_values,
-                duration=duration,
-                dt=dt,
-                q0=q0_rad,
-                trajectory=trajectory,
-                lstm_model=lstm_model,
-            )
-
-            # Optional: Run Baseline for Comparison
-            baseline_results = None
-            if self.pc_auto_tune_check.isChecked() and self.pc_compare_baseline_check.isChecked():
-                baseline_results = run_pid_controller(
+            engine_choice = self.pc_engine_combo.currentText()
+            if engine_choice == "Legacy (Robotics Toolbox)":
+                (
+                    t_steps,
+                    q_values,
+                    error_values,
+                    u_values,
+                    torque_values,
+                    p_values,
+                    i_values,
+                    d_values,
+                    setpoint_values,
+                ) = run_pid_controller(
                     setpoints=setpoints_rad,
                     pid_values=pid_values,
                     duration=duration,
                     dt=dt,
                     q0=q0_rad,
                     trajectory=trajectory,
-                    lstm_model=None,
                 )
+            else:
+                baseline_setting = "A" if "Setting A" in engine_choice else "B"
+                from simulate_td3 import run_td3_simulation
+                try:
+                    (
+                        t_steps,
+                        q_values,
+                        error_values,
+                        u_values,
+                        torque_values,
+                        p_values,
+                        i_values,
+                        d_values,
+                        setpoint_values,
+                    ) = run_td3_simulation(
+                        baseline_setting=baseline_setting,
+                        duration=duration,
+                        dt=dt,
+                        q0_rad=q0_rad,
+                        trajectory=trajectory,
+                    )
+                except FileNotFoundError as e:
+                    QtWidgets.QMessageBox.critical(self, "Checkpoint Not Found", str(e))
+                    return
+
+            # Optional: Run Baseline for Comparison
+            baseline_results = None
 
             active_joints = [i for i, chk in enumerate(self.pc_joint_checks) if chk.isChecked()]
             active_vars = [v for v, chk in self.pc_var_checks.items() if chk.isChecked()]
