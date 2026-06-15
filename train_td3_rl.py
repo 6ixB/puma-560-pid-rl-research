@@ -65,6 +65,7 @@ class TD3Agent:
 
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 1.0)
         self.critic_optimizer.step()
 
         if self.total_it % self.policy_freq == 0:
@@ -72,6 +73,7 @@ class TD3Agent:
             
             self.actor_optimizer.zero_grad()
             actor_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
             self.actor_optimizer.step()
 
             for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
@@ -127,13 +129,19 @@ def main():
     parser.add_argument("--eval_freq", default=10, type=int)
     parser.add_argument("--max_timesteps", default=500, type=int)
     parser.add_argument("--expl_noise", default=0.1, type=float)
-    parser.add_argument("--batch_size", default=64, type=int)
+    parser.add_argument("--batch_size", default=256, type=int)
     parser.add_argument("--save_model", action="store_true", default=True)
     parser.add_argument("--load_model", default="")
     parser.add_argument("--baseline_setting", default="A", type=str, choices=["A", "B"])
     parser.add_argument("--save_freq", default=0, type=int, help="Save a checkpoint every this many episodes (0 to disable)")
     parser.add_argument("--early_stopping_patience", default=0, type=int, help="Stop training if no improvement for this many episodes (0 to disable)")
+    parser.add_argument("--seed", default=0, type=int, help="Random seed for reproducibility")
     args = parser.parse_args()
+
+    import random
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    random.seed(args.seed)
 
     import time
     timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -180,7 +188,10 @@ def main():
             next_state, reward, terminated, truncated, info = env.step(action, episode=episode)
             done_bool = terminated or truncated
             
-            replay_buffer.add(state, action, next_state, reward, float(done_bool))
+            # The safety cage intercepts actions; we MUST store the action actually taken
+            executed_action = info.get('actual_action', action)
+            
+            replay_buffer.add(state, executed_action, next_state, reward, float(done_bool))
             
             state = next_state
             ep_reward += reward

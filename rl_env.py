@@ -231,6 +231,7 @@ class Puma560Env:
         self.traj_phase = np.random.uniform(0, 2*np.pi)
         
         self._update_reference(0.0)
+        self.q = np.copy(self.q_ref)  # Spawn robot exactly on the trajectory start point
         s0 = self._get_state()
         self.history = np.tile(s0, (self.window_size, 1))
         
@@ -304,7 +305,7 @@ class Puma560Env:
         if truncated: reward -= 10.0
         elif terminated: reward += 10.0
             
-        return np.copy(self.history), reward, terminated, truncated, {'error': np.linalg.norm(e_final)}
+        return np.copy(self.history), reward, terminated, truncated, {'error': np.linalg.norm(e_final), 'actual_action': tau_residual}
 
 class Puma560EnvTD3(Puma560Env):
     """
@@ -396,4 +397,4 @@ class Puma560EnvTD3(Puma560Env):
         if truncated: reward -= 10.0
         elif terminated: reward += 10.0
             
-        return np.copy(self.history), reward, terminated, truncated, {'error': np.linalg.norm(e_final)}
+        return np.copy(self.history), reward, terminated, truncated, {'error': np.linalg.norm(e_final), 'actual_action': tau_residual}
