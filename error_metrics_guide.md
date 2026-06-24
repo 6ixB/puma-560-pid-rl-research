@@ -1,8 +1,36 @@
 # Error Metrics — Research Evaluation Guide
 
-**Date:** 2026-06-10
+**Date:** 2026-06-24
+**Script:** `error_metrics_unified.py` *(replaces the original `error_metrics.py`)*
 
-This document explains the correct way to run `error_metrics.py` to evaluate the TD3 + LSTM agent as the research intended, why a sinusoidal trajectory must be used instead of a static step, and what the results actually mean.
+This document explains the correct way to run error metrics to evaluate the TD3 + LSTM
+agent, why both controllers must run on the same physics plant, why a sinusoidal trajectory
+must be used for research-intended results, and what the numbers actually mean.
+
+---
+
+## Why `error_metrics_unified.py` Instead of `error_metrics.py`
+
+The original `error_metrics.py` ran the **PID baseline on roboticstoolbox** (full
+rigid-body dynamics) while the **TD3 agent ran on Puma560EnvTD3** (simplified diagonal
+inertia model). This plant mismatch made the comparison unfair:
+
+- The TD3 agent was trained entirely on `Puma560EnvTD3`
+- When evaluated against roboticstoolbox physics it had never seen, its residual torques
+  caused drift instead of improvement
+- The result was a misleading **-195% overall MSE** — the agent appeared catastrophic
+  when it was simply being judged on a different world than it was trained on
+
+`error_metrics_unified.py` fixes this by running **both PID and TD3 through
+Puma560EnvTD3**. PID-only mode passes zero residual torques; the environment's internal
+FastPIDController still runs at 1 ms as normal.
+
+| | `error_metrics.py` (old) | `error_metrics_unified.py` (current) |
+|---|---|---|
+| PID plant | roboticstoolbox | Puma560EnvTD3 |
+| TD3 plant | Puma560EnvTD3 | Puma560EnvTD3 |
+| Comparison fair? | No | Yes |
+| Overall MSE improvement (sine) | -195% (artefact) | +3.44% (real) |
 
 ---
 
@@ -10,155 +38,174 @@ This document explains the correct way to run `error_metrics.py` to evaluate the
 
 ### The Problem with Static Evaluation
 
-Running `error_metrics.py` with default settings uses a **static step input** (e.g. Joint 2 → 45°). This produces modest-looking improvements (~18%) that underrepresent the agent's actual capability.
-
-The reason: the TD3 agent was trained **exclusively on sinusoidal trajectories** inside `rl_env.py`:
+Running with `--trajectory static` uses a constant step input (e.g. all joints → 25°).
+This produces near-zero improvements because the TD3 agent was trained **exclusively on
+sinusoidal trajectories** inside `rl_env.py`:
 
 ```python
 # From rl_env.py — _update_reference()
 q_ref_val = amp * np.sin(np.pi * freq * t + phase) + 0.2 * np.sin(0.6 * np.pi * freq * t + phase)
 ```
 
-With randomised parameters per episode: `amp ∈ [0.3, 0.7] rad`, `freq ∈ [0.8, 1.2]`. The agent has never seen a static step during training. Evaluating it on one is an out-of-distribution test — the agent was never optimised for it.
+With randomised parameters per episode: `amp ∈ [0.3, 0.7] rad`, `freq ∈ [0.8, 1.2]`.
+The agent has never seen a static step during training — evaluating it on one is an
+out-of-distribution test.
 
 ### The Correct Evaluation
 
-To evaluate as the research intended, both the PID and TD3 simulations must use a **sinusoidal reference trajectory** that matches the training distribution. The default sine parameters are:
+To evaluate as the research intended, use a **sinusoidal reference trajectory** that
+matches the training distribution:
 
 - **Amplitude:** 0.5 rad (28.6°) — centre of the training range [0.3, 0.7]
-- **Frequency:** 0.5 Hz — approximately matches the training distribution
+- **Frequency:** 0.5 Hz — matches the dominant training tone
 
 ---
 
 ## Commands
 
-### Minimum command to see research-intended results
+### Minimum command — research-intended results
 
 ```bash
-uv run python error_metrics.py --trajectory sine --setting A --td3
+uv run python error_metrics_unified.py --td3 --trajectory sine
 ```
 
 ### Full recommended evaluation (both settings, side by side)
 
 ```bash
-uv run python error_metrics.py --trajectory sine --setting both --td3
+uv run python error_metrics_unified.py --td3 --trajectory sine --setting both
 ```
 
-### Customise sine parameters to sweep the training distribution
+### Static step for reference
+
+```bash
+uv run python error_metrics_unified.py --td3 --setpoints "25,25,25,25,25,25"
+```
+
+### Isolate a specific joint
+
+```bash
+# Only J2 (shoulder) — hardest joint
+uv run python error_metrics_unified.py --td3 --setpoints "0,45,0,0,0,0"
+
+# Only J3 (elbow) — best-performing joint
+uv run python error_metrics_unified.py --td3 --setpoints "0,0,30,0,0,0"
+```
+
+### Sweep the training distribution
 
 ```bash
 # Lower amplitude end of training range
-uv run python error_metrics.py --trajectory sine --td3 --sine_amp 17.2 --sine_freq 0.5
+uv run python error_metrics_unified.py --td3 --trajectory sine --sine_amp 17.2
 
 # Upper amplitude end of training range
-uv run python error_metrics.py --trajectory sine --td3 --sine_amp 40.1 --sine_freq 0.5
+uv run python error_metrics_unified.py --td3 --trajectory sine --sine_amp 40.1
 
 # Higher frequency
-uv run python error_metrics.py --trajectory sine --td3 --sine_amp 28.6 --sine_freq 0.6
-```
-
-### Static step for reference (original behaviour)
-
-```bash
-uv run python error_metrics.py --trajectory static --setting both --td3
+uv run python error_metrics_unified.py --td3 --trajectory sine --sine_freq 0.6
 ```
 
 ---
 
-## Results (2026-06-10)
+## Results (2026-06-24, Setting A)
 
-### Command used
+### Sinusoidal trajectory — training distribution (10 s)
 
-```bash
-uv run python error_metrics.py --trajectory sine --setting both --td3
-```
-
-### Setting A — PID Baseline
+#### PID-Only
 
 ```
   Joint    MSE (rad^2)            ISE (rad^2*s)          SSE (rad)
-  J1       0.00035800             0.00358005             0.01693249
-  J2       0.00089923             0.00899226             0.03292995
-  J3       0.00016469             0.00164689             0.01264071
-  J4       0.00001232             0.00012322             0.00297412
-  J5       0.00001071             0.00010713             0.00280347
-  J6       0.00004993             0.00049928             0.00601326
-  Overall  0.00024915             0.01494883             0.01238233
+  J1       0.00038540             0.00385403             0.01616608
+  J2       0.00006724             0.00067236             0.00251834
+  J3       0.00011975             0.00119749             0.00578486
+  J4       0.00083170             0.00831703             0.02448955
+  J5       0.00035029             0.00350294             0.01583825
+  J6       0.00094639             0.00946392             0.02618712
+  Overall  0.00045013             0.02700777             0.01516403
 ```
 
-### Setting A — TD3 + LSTM
+#### PID+TD3
 
 ```
   Joint    MSE (rad^2)            ISE (rad^2*s)          SSE (rad)
-  J1       0.00034982             0.00349816             0.01605948
-  J2       0.00004327             0.00043272             0.00293190
-  J3       0.00007303             0.00073033             0.00554587
-  J4       0.00076972             0.00769716             0.02424120
-  J5       0.00032719             0.00327188             0.01551217
-  J6       0.00083238             0.00832376             0.02528383
-  Overall  0.00039923             0.02395401             0.01492907
+  J1       0.00038101             0.00381009             0.01613565
+  J2       0.00007494             0.00074939             0.00286079
+  J3       0.00010635             0.00106346             0.00495530
+  J4       0.00081763             0.00817626             0.02486498
+  J5       0.00034745             0.00347449             0.01567410
+  J6       0.00088041             0.00880410             0.02555489
+  Overall  0.00043463             0.02607779             0.01500762
 ```
 
-### Setting A — Per-Joint Improvement
-
-```
-  Joint    MSE Improv.            ISE Improv.            SSE Improv.
-  J1       +2.29%                 +2.29%                 +5.16%
-  J2       +95.19%                +95.19%                +91.10%
-  J3       +55.65%                +55.65%                +56.13%
-  J4       -6146.44%              -6146.44%              -715.07%
-  J5       -2954.27%              -2954.27%              -453.32%
-  J6       -1567.14%              -1567.14%              -320.47%
-  Overall  -60.24%                -60.24%                -20.57%
-```
-
-### Setting B — Per-Joint Improvement
+#### Per-Joint Improvement
 
 ```
   Joint    MSE Improv.            ISE Improv.            SSE Improv.
-  J1       +2.04%                 +2.04%                 +5.28%
-  J2       +95.60%                +95.60%                +91.75%
-  J3       +52.64%                +52.64%                +54.43%
-  J4       -6445.81%              -6445.81%              -745.57%
-  J5       -2991.19%              -2991.19%              -474.11%
-  J6       -1648.35%              -1648.35%              -345.82%
-  Overall  -76.46%                -76.46%                -24.85%
+  J1            +1.14%                 +1.14%                 +0.19%
+  J2           -11.46%                -11.46%                -13.60%
+  J3           +11.19%                +11.19%                +14.34%
+  J4            +1.69%                 +1.69%                 -1.53%
+  J5            +0.81%                 +0.81%                 +1.04%
+  J6            +6.97%                 +6.97%                 +2.41%
+  Overall       +3.44%                 +3.44%                 +1.03%
 ```
+
+### Static 25° step on all joints (5 s)
+
+#### Per-Joint Improvement
+
+```
+  Joint    MSE Improv.            ISE Improv.            SSE Improv.
+  J1            -1.56%                 -1.56%                 +7.51%
+  J2            -1.52%                 -1.52%                 -0.42%
+  J3            +3.94%                 +3.94%                 +0.33%
+  J4            +1.55%                 +1.55%                -13.98%
+  J5            -0.88%                 -0.88%                +17.53%
+  J6            +1.50%                 +1.50%                -16.76%
+  Overall       +0.63%                 +0.63%                 -0.45%
+```
+
+Near-zero improvement on step inputs, as expected — the agent was not trained on them.
 
 ---
 
 ## Interpretation
 
-### What went well
+### What the sinusoidal results show
 
-**Joint 2 (Shoulder) — ~95% improvement in both settings.**
-This is the most dramatic result. The TD3 + LSTM agent reduces J2 tracking error by over 95% on sinusoidal trajectories. J2 is the gravity-dominant joint (G_coeff = 50 Nm/rad) and the one most affected by nonlinear dynamics. The LSTM's temporal memory allows it to anticipate the sinusoidal phase and pre-emptively apply corrective torque before gravity pulls the joint off-track. This is exactly what the research was designed to demonstrate.
+**J3 Elbow — strongest improvement (+11.2% MSE, +14.3% SSE).**
+J3 carries a 30 Nm/rad gravity coefficient. On a sinusoidal trajectory, gravity
+continuously disturbs the joint as its angle changes. The TD3 agent learns to anticipate
+this pattern and adds corrective torque that the PID alone cannot provide.
 
-**Joint 3 (Elbow) — ~55% improvement.**
-J3 has a significant gravity coefficient (G_coeff = 30 Nm/rad) and benefits similarly. The agent learns the cross-joint coupling between J2 and J3 and corrects for both simultaneously.
+**J6 Wrist-Yaw — second best (+7.0% MSE).**
+Despite having no gravity loading, the agent finds useful small corrections on J6 during
+sustained sinusoidal tracking.
 
-**Joint 1 (Waist) — small but consistent +2% improvement.**
-J1 has no gravity loading (G_coeff = 0) so the improvement is marginal, but the agent at least does not hurt it.
+**J1, J4, J5 — marginal (+0.8–1.7% MSE).**
+Improvements exist but are small. The agent contributes minor corrections that do not
+meaningfully move the needle.
 
-### What went wrong — Joints 4, 5, 6
-
-**Joints 4, 5, 6 (Wrist) — catastrophic degradation (-715% to -6146%).**
-The wrist joints have the smallest torque limits (5, 5, 3 Nm) and the lowest inertia. On a sinusoidal trajectory, the TD3 agent is applying residual torques to these joints that are far larger than the error warrants — the agent is actually fighting the PID rather than helping it.
-
-This is a sign of **insufficient training** specific to the wrist joints. The agent has learned to aggressively correct J2 and J3, but it has not learned to leave J4–J6 alone when they are already tracking well. This manifests as the overall metric going negative despite J2 and J3 both improving substantially.
+**J2 Shoulder — regression (-11.5% MSE, -13.6% SSE).**
+J2 has the heaviest gravity load at 50 Nm/rad. The agent over-corrects — it applies
+residual torques larger than the tracking error warrants, pushing J2 past the reference
+instead of toward it. The Safety Cage allows up to 30% of the PID magnitude, which on
+J2's large torques is still a significant perturbation. More training is needed for the
+agent to learn to be conservative here.
 
 ### Root cause summary
 
-| Joint | G_coeff | Inertia | Agent behaviour |
+| Joint | G_coeff | Agent behaviour | Result |
 |---|---|---|---|
-| J1 | 0.0 | 4.0 kg·m² | Negligible effect — agent learns to leave alone |
-| J2 | 50.0 | 6.0 kg·m² | **Strong improvement** — agent compensates gravity |
-| J3 | 30.0 | 4.5 kg·m² | **Strong improvement** — agent compensates gravity |
-| J4 | 0.0 | 1.5 kg·m² | Degraded — agent over-corrects |
-| J5 | 0.0 | 1.0 kg·m² | Degraded — agent over-corrects |
-| J6 | 0.0 | 0.8 kg·m² | Degraded — agent over-corrects |
+| J1 | 0.0 Nm/rad | Adds negligible corrections | Marginal improvement |
+| J2 | 50.0 Nm/rad | Over-corrects on heavy gravity joint | Regression |
+| J3 | 30.0 Nm/rad | Learns appropriate gravity compensation | Best improvement |
+| J4 | 0.0 Nm/rad | Adds small useful corrections | Marginal improvement |
+| J5 | 0.0 Nm/rad | Adds small useful corrections | Marginal improvement |
+| J6 | 0.0 Nm/rad | Finds useful pattern corrections | Second-best improvement |
 
-The pattern is clear: the RL agent has learned to compensate **gravity** (the dominant nonlinearity in J2 and J3) but has not yet learned to be conservative with the zero-gravity wrist joints. More training episodes are needed for the agent to refine its policy on J4–J6.
+The overall picture: TD3 provides **genuine but modest improvement (+3.44% MSE)** on the
+training distribution. The main bottleneck is J2 — fixing that regression would push the
+overall improvement substantially higher.
 
 ---
 
@@ -166,13 +213,15 @@ The pattern is clear: the RL agent has learned to compensate **gravity** (the do
 
 ### Train for more episodes
 
-The current checkpoint was saved after a limited number of training episodes. The wrist joint degradation is a sign that the agent is still learning. Run:
+The current checkpoint was saved after a limited number of episodes. J2's regression is a
+sign the agent is still learning. Run:
 
 ```bash
 uv run python train_td3_rl.py --baseline_setting A --max_episodes 3000
 ```
 
-Then re-evaluate. A fully converged agent should show improvement on all joints, not just J2 and J3.
+Then re-evaluate. A fully converged agent should show improvement on all joints, not just
+J3 and J6.
 
 ### Check TensorBoard to see training status
 
@@ -180,19 +229,9 @@ Then re-evaluate. A fully converged agent should show improvement on all joints,
 uv run tensorboard --logdir runs
 ```
 
-Look at the `Eval/Error` curve. If it was still decreasing when training stopped, the agent had not converged. If it had plateaued, more training episodes may not help and hyperparameter tuning would be needed instead.
-
-### Compare static vs sine results side by side
-
-To see the full picture of where the agent succeeds and struggles:
-
-```bash
-# Static step evaluation
-uv run python error_metrics.py --trajectory static --setting A --td3
-
-# Sinusoidal evaluation (research-intended)
-uv run python error_metrics.py --trajectory sine --setting A --td3
-```
+Look at the `Eval/Error` curve. If it was still decreasing when training stopped, the
+agent had not converged. If it had plateaued, hyperparameter tuning would be needed
+instead of simply running more episodes.
 
 ---
 
@@ -200,9 +239,11 @@ uv run python error_metrics.py --trajectory sine --setting A --td3
 
 | Purpose | Command |
 |---|---|
-| Research-intended evaluation (sine, both settings) | `uv run python error_metrics.py --trajectory sine --setting both --td3` |
-| Research-intended evaluation (sine, Setting A only) | `uv run python error_metrics.py --trajectory sine --setting A --td3` |
-| Static step evaluation (original) | `uv run python error_metrics.py --trajectory static --setting both --td3` |
-| PID-only baseline, static | `uv run python error_metrics.py --trajectory static --setting both` |
-| PID-only baseline, sine | `uv run python error_metrics.py --trajectory sine --setting both` |
-| Custom sine amplitude and frequency | `uv run python error_metrics.py --trajectory sine --td3 --sine_amp 28.6 --sine_freq 0.5` |
+| Research-intended evaluation (sine, Setting A) | `uv run python error_metrics_unified.py --td3 --trajectory sine` |
+| Research-intended evaluation (sine, both settings) | `uv run python error_metrics_unified.py --td3 --trajectory sine --setting both` |
+| Static step, all joints 25° | `uv run python error_metrics_unified.py --td3 --setpoints "25,25,25,25,25,25"` |
+| Static step, J2 only 45° | `uv run python error_metrics_unified.py --td3 --setpoints "0,45,0,0,0,0"` |
+| PID-only baseline, sine | `uv run python error_metrics_unified.py --trajectory sine` |
+| PID-only baseline, static | `uv run python error_metrics_unified.py` |
+| Custom sine amplitude and frequency | `uv run python error_metrics_unified.py --td3 --trajectory sine --sine_amp 28.6 --sine_freq 0.5` |
+| Full 10-second run | `uv run python error_metrics_unified.py --td3 --trajectory sine --duration 10` |
