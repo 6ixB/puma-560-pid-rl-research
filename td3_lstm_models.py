@@ -6,7 +6,7 @@ import numpy as np
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class ReplayBuffer:
-    def __init__(self, state_shape, action_dim, max_size=100000):
+    def __init__(self, state_shape, action_dim, max_size=1000000):
         self.max_size = max_size
         self.ptr = 0
         self.size = 0
@@ -53,16 +53,23 @@ class TD3Actor(nn.Module):
     def __init__(self, state_dim=42, action_dim=6, max_action=None, hidden_dim=256):
         super(TD3Actor, self).__init__()
         
+        # Extract temporal features from the last 20 timesteps (window_size) of state history
         self.lstm = LSTMFeatureExtractor(state_dim, hidden_dim, num_layers=2)
         
         self.register_buffer('c_t', torch.FloatTensor([0.0, 1.0, 1.0, 0.5, 0.0, 0.0]))
         context_dim = 6
         
-        # Concatenate LSTM features (hidden_dim) with current instantaneous state (state_dim) and context vector (context_dim)
+        # Layer 1: Combines LSTM temporal features + instantaneous current state + context vector
         self.l1 = nn.Linear(hidden_dim + state_dim + context_dim, 256)
+        # LayerNorm 1: Stabilizes the activations to prevent exploding gradients
         self.ln1 = nn.LayerNorm(256)
+        
+        # Layer 2: Hidden processing layer
         self.l2 = nn.Linear(256, 128)
+        # LayerNorm 2: Stabilizes the activations before the final output layer
         self.ln2 = nn.LayerNorm(128)
+        
+        # Layer 3: Output layer generating raw action values (bounded by Tanh later)
         self.l3 = nn.Linear(128, action_dim)
         
         if max_action is None:
@@ -96,14 +103,20 @@ class TD3Critic(nn.Module):
         max_action = np.array([15.0, 20.0, 15.0, 5.0, 5.0, 3.0])
         self.register_buffer('max_action', torch.FloatTensor(max_action))
         
-        # Q1 architecture
+        # --- Q1 Architecture ---
+        # Layer 1: Combines LSTM temporal features + instantaneous current state + context vector + ACTION
         self.l1 = nn.Linear(hidden_dim + state_dim + context_dim + action_dim, 256)
         self.ln1 = nn.LayerNorm(256)
+        
+        # Layer 2: Hidden processing layer
         self.l2 = nn.Linear(256, 128)
         self.ln2 = nn.LayerNorm(128)
+        
+        # Layer 3: Output layer generating the Q1-value (Expected future reward)
         self.l3 = nn.Linear(128, 1)
 
-        # Q2 architecture
+        # --- Q2 Architecture (Twin Critic) ---
+        # Identical to Q1, used to prevent overestimation bias in continuous control
         self.l4 = nn.Linear(hidden_dim + state_dim + context_dim + action_dim, 256)
         self.ln4 = nn.LayerNorm(256)
         self.l5 = nn.Linear(256, 128)

@@ -130,7 +130,7 @@ class SafetyCage:
         if a_max < self.alpha:
             tau_safe *= (a_max / self.alpha)
             
-        return tau_safe
+        return np.clip(tau_safe, -PUMA560Params.tau_max, PUMA560Params.tau_max)
 
 class Puma560Env:
     """
@@ -292,10 +292,36 @@ class Puma560Env:
         w_energy = 0.001 * progress
         w_jerk = 0.1 * progress
         
-        # Rewards
-        r_track = -10.0 * np.sum(e_final**2) - 1.0 * np.sum(ed_final**2) - 0.5 * np.sum(self.e_int**2)
-        r_energy = -w_energy * np.sum(tau_residual**2) - (w_energy/10.0) * np.sum((tau_residual + total_tau_pid/10)**2)
-        r_smoothness = -w_jerk * np.sum((tau_residual - self.tau_residual_prev)**2)
+        # ====================================================================
+        # REWARD FUNCTION BREAKDOWN
+        # ====================================================================
+        
+        # 1. Tracking Reward (r_track)
+        # Penalizes the agent for failing to follow the reference trajectory.
+        # - Weight tracking errors inversely to their baseline MSE to balance multi-joint learning.
+        # - We normalize the weights so their mean is 1.0. This prevents the total reward magnitude
+        # - from blowing up and hitting the [-20.0, 20.0] clip limit, which destroys learning gradients.
+        raw_weights = np.array([2.5, 1.0, 5.5, 75.0, 82.0, 18.0])
+        joint_weights = raw_weights / np.mean(raw_weights)
+        r_track = -10.0 * np.sum(joint_weights * (e_final**2)) - 1.0 * np.sum(joint_weights * (ed_final**2)) - 0.5 * np.sum(joint_weights * (self.e_int**2))
+        
+        # 2. Energy Reward (r_energy)
+        # Penalizes the agent for using excessive torque/power.
+        # - Normalize torques so the energy penalty is proportional to the joint's maximum capability.
+        # - This ensures tiny wrist joints aren't disproportionately punished compared to massive shoulder joints.
+        max_action = np.array([15.0, 20.0, 15.0, 5.0, 5.0, 3.0])
+        norm_tau = tau_residual / max_action
+        norm_total_tau = (tau_residual + total_tau_pid/10.0) / max_action
+        r_energy = -w_energy * np.sum(norm_tau**2) - (w_energy/10.0) * np.sum(norm_total_tau**2)
+        
+        # 3. Smoothness Reward (r_smoothness)
+        # Penalizes "jerk" or sudden massive changes in torque from one timestep to the next.
+        # - Also normalized by max_action to ensure fair punishment across all joints.
+        norm_tau_prev = self.tau_residual_prev / max_action
+        r_smoothness = -w_jerk * np.sum((norm_tau - norm_tau_prev)**2)
+        
+        # 4. Stability Reward (r_stability)
+        # Gives a flat +1.0 bonus if the agent perfectly tracks the trajectory (all errors < 0.01 radians).
         r_stability = 1.0 if np.max(np.abs(e_final)) < 0.01 else 0.0
         
         reward = float(np.clip(r_track + r_energy + r_smoothness + r_stability, -20.0, 20.0))
@@ -385,9 +411,36 @@ class Puma560EnvTD3(Puma560Env):
         w_total = 0.001
         w_jerk = 0.1
         
-        r_track = -10.0 * np.sum(e_final**2) - 1.0 * np.sum(ed_final**2) - 0.5 * np.sum(self.e_int**2)
-        r_energy = -w_energy * np.sum(tau_residual**2) - w_total * np.sum((tau_residual + total_tau_pid/self.rl_decimation)**2)
-        r_smoothness = -w_jerk * np.sum((tau_residual - self.tau_residual_prev)**2)
+        # ====================================================================
+        # REWARD FUNCTION BREAKDOWN
+        # ====================================================================
+        
+        # 1. Tracking Reward (r_track)
+        # Penalizes the agent for failing to follow the reference trajectory.
+        # - Weight tracking errors inversely to their baseline MSE to balance multi-joint learning.
+        # - We normalize the weights so their mean is 1.0. This prevents the total reward magnitude
+        # - from blowing up and hitting the [-20.0, 20.0] clip limit, which destroys learning gradients.
+        raw_weights = np.array([2.5, 1.0, 5.5, 75.0, 82.0, 18.0])
+        joint_weights = raw_weights / np.mean(raw_weights)
+        r_track = -10.0 * np.sum(joint_weights * (e_final**2)) - 1.0 * np.sum(joint_weights * (ed_final**2)) - 0.5 * np.sum(joint_weights * (self.e_int**2))
+        
+        # 2. Energy Reward (r_energy)
+        # Penalizes the agent for using excessive torque/power.
+        # - Normalize torques so the energy penalty is proportional to the joint's maximum capability.
+        # - This ensures tiny wrist joints aren't disproportionately punished compared to massive shoulder joints.
+        max_action = np.array([15.0, 20.0, 15.0, 5.0, 5.0, 3.0])
+        norm_tau = tau_residual / max_action
+        norm_total_tau = (tau_residual + total_tau_pid/self.rl_decimation) / max_action
+        r_energy = -w_energy * np.sum(norm_tau**2) - w_total * np.sum(norm_total_tau**2)
+        
+        # 3. Smoothness Reward (r_smoothness)
+        # Penalizes "jerk" or sudden massive changes in torque from one timestep to the next.
+        # - Also normalized by max_action to ensure fair punishment across all joints.
+        norm_tau_prev = self.tau_residual_prev / max_action
+        r_smoothness = -w_jerk * np.sum((norm_tau - norm_tau_prev)**2)
+        
+        # 4. Stability Reward (r_stability)
+        # Gives a flat +1.0 bonus if the agent perfectly tracks the trajectory (all errors < 0.01 radians).
         r_stability = 1.0 if np.max(np.abs(e_final)) < 0.01 else 0.0
         
         reward = float(np.clip(r_track + r_energy + r_smoothness + r_stability, -20.0, 20.0))

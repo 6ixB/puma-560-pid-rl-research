@@ -2,6 +2,7 @@ import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
+import pickle
 
 from rl_env import Puma560Env, Puma560EnvTD3
 from td3_lstm_models import TD3Actor, device
@@ -12,6 +13,8 @@ def main():
     parser.add_argument("--baseline_setting", default="A", type=str, choices=["A", "B"], help="Default setting if not comparing.")
     parser.add_argument("--checkpoint", default=None, type=str, help="Specific checkpoint path for the default run.")
     parser.add_argument("--compare", nargs="+", help="List of 'Setting:CheckpointPath:Label' to compare. e.g. A:checkpoints/Setting_A/td3_best_actor:Run1")
+    parser.add_argument("--export_data", type=str, default=None, help="Path to save the simulation data (e.g. old_run.pkl)")
+    parser.add_argument("--import_data", nargs="+", default=[], help="Paths to load previously saved simulation data (e.g. old_run.pkl)")
     args = parser.parse_args()
 
     # Step input to 90 degree starting from 0 degree for all joints
@@ -38,6 +41,19 @@ def main():
     
     results = []
 
+    if args.import_data:
+        for pkl_file in args.import_data:
+            try:
+                with open(pkl_file, "rb") as f:
+                    loaded = pickle.load(f)
+                    if isinstance(loaded, list):
+                        results.extend(loaded)
+                    else:
+                        results.append(loaded)
+                print(f"Imported previous data from {pkl_file}")
+            except Exception as e:
+                print(f"Error loading {pkl_file}: {e}")
+
     for run in runs:
         print(f"Running evaluation simulation for {run['label']}...")
         env = Puma560EnvTD3(dt=0.001, rl_decimation=10, lstm_decimation=5, window_size=20, baseline_setting=run['setting'], trajectory=step_trajectory)
@@ -51,7 +67,12 @@ def main():
             print(f"Error: Could not find checkpoint at {run['checkpoint']}.")
             continue
 
-        state = env.reset(episode=300) # Full safety cage active
+        env.reset(episode=300) # Full safety cage active
+        env.q = np.zeros(6) # Force the robot to start at 0 degrees
+        # Re-initialize history with the correct starting state
+        s0 = env._get_state()
+        env.history = np.tile(s0, (env.window_size, 1))
+        state = np.copy(env.history)
         
         t_steps = []
         q_values = [[] for _ in range(6)]
@@ -93,6 +114,14 @@ def main():
             "err_values": err_values,
             "tau_rl_values": tau_rl_values
         })
+
+    if args.export_data:
+        try:
+            with open(args.export_data, "wb") as f:
+                pickle.dump(results, f)
+            print(f"Exported all simulation data to {args.export_data}")
+        except Exception as e:
+            print(f"Error exporting data to {args.export_data}: {e}")
 
     if not results:
         print("No results to plot.")
@@ -161,9 +190,13 @@ def run_td3_simulation(baseline_setting, duration, dt, q0_rad, trajectory):
     except FileNotFoundError as e:
         raise FileNotFoundError(f"Missing checkpoint: {checkpoint_path}. Please train this setting first!") from e
         
-    state = env.reset(episode=300)
+    env.reset(episode=300)
     if q0_rad is not None:
         env.q = np.array(q0_rad)
+        # Re-initialize history to reflect the custom start position
+        s0 = env._get_state()
+        env.history = np.tile(s0, (env.window_size, 1))
+    state = np.copy(env.history)
         
     t_steps = []
     q_values = [[] for _ in range(6)]
