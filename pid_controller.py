@@ -6,6 +6,7 @@ from numpy import float64 as f64
 from numpy.typing import NDArray
 from roboticstoolbox import models
 
+from rl_env import compute_friction, PUMA560Params
 from trajectory import TrajectoryGenerator, StaticTrajectory
 
 
@@ -95,6 +96,7 @@ def run_pid_controller(
         M: NDArray[f64] = robot.inertia(q)  # pyright: ignore[reportAttributeAccessIssue]
         C: NDArray[f64] = robot.coriolis(q, qd)  # pyright: ignore[reportAttributeAccessIssue]
         G: NDArray[f64] = robot.gravload(q)  # pyright: ignore[reportAttributeAccessIssue]
+        tau_fric: NDArray[f64] = compute_friction(qd, PUMA560Params)
 
         pid_outputs = [pids[i].update(q[i], dt) for i in range(6)]
         
@@ -105,7 +107,7 @@ def run_pid_controller(
         tau_vector: NDArray[f64] = tau_pid
         # tau_vector: NDArray[f64] = tau_pid + G
 
-        qdd: NDArray[f64] = np.linalg.inv(M) @ (tau_vector - C @ qd - G)
+        qdd: NDArray[f64] = np.linalg.inv(M) @ (tau_vector - C @ qd - G - tau_fric)
 
         qd += qdd * dt
         q += qd * dt

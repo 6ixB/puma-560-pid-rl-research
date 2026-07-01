@@ -29,6 +29,14 @@ class TD3Agent:
         self.critic_target = copy.deepcopy(self.critic)
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=3e-4)
 
+        # Flatten LSTM parameters to contiguous memory layout once on target device to prevent warnings and leaks
+        self.actor.lstm.lstm.flatten_parameters()
+        self.actor_target.lstm.lstm.flatten_parameters()
+        self.critic.lstm1.lstm.flatten_parameters()
+        self.critic.lstm2.lstm.flatten_parameters()
+        self.critic_target.lstm1.lstm.flatten_parameters()
+        self.critic_target.lstm2.lstm.flatten_parameters()
+
         self.max_action = max_action
         self.max_action_tensor = torch.FloatTensor(max_action).to(device)
         self.discount = discount
@@ -42,7 +50,7 @@ class TD3Agent:
     def select_action(self, state):
         state = torch.FloatTensor(state).unsqueeze(0).to(device)
         with torch.no_grad():
-            action = self.actor(state).cpu().data.numpy().flatten()
+            action = self.actor(state).detach().cpu().numpy().flatten()
         return action
 
     def train(self, replay_buffer, batch_size=100):
@@ -69,6 +77,7 @@ class TD3Agent:
         self.critic_optimizer.step()
 
         if self.total_it % self.policy_freq == 0:
+            # Actor Update
             actor_loss = -self.critic.Q1(state, self.actor(state)).mean()
             
             self.actor_optimizer.zero_grad()
@@ -76,6 +85,7 @@ class TD3Agent:
             torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
             self.actor_optimizer.step()
 
+            # Soft update target networks
             for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
                 target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
@@ -93,29 +103,28 @@ class TD3Agent:
         torch.save(self.actor_optimizer.state_dict(), filename + "_actor_optimizer")
 
     def load(self, filename):
-        self.critic.load_state_dict(torch.load(filename + "_critic"))
+        self.critic.load_state_dict(torch.load(filename + "_critic"), strict=False)
         self.critic_optimizer.load_state_dict(torch.load(filename + "_critic_optimizer"))
         self.critic_target = copy.deepcopy(self.critic)
 
-        self.actor.load_state_dict(torch.load(filename + "_actor"))
+        self.actor.load_state_dict(torch.load(filename + "_actor"), strict=False)
         self.actor_optimizer.load_state_dict(torch.load(filename + "_actor_optimizer"))
         self.actor_target = copy.deepcopy(self.actor)
 
 
-def eval_policy(agent, baseline_setting='A', eval_episodes=5):
-    env = Puma560EnvTD3(dt=0.001, rl_decimation=10, lstm_decimation=5, window_size=20, baseline_setting=baseline_setting)
+def eval_policy(agent, eval_env, eval_episodes=5):
     avg_reward = 0.
     avg_error = 0.
     for ep in range(eval_episodes):
         # 300 simulates late-stage safety cage alpha for strict evaluation
-        state = env.reset(episode=300) 
+        state = eval_env.reset(episode=300) 
         done = False
         while not done:
             action = agent.select_action(state)
-            state, reward, terminated, truncated, info = env.step(action, episode=300)
+            state, reward, terminated, truncated, info = eval_env.step(action, episode=300)
             avg_reward += reward
             done = terminated or truncated
-        avg_error += info['error']
+        avg_error += float(info['error'])
         
     avg_reward /= eval_episodes
     avg_error /= eval_episodes
@@ -136,7 +145,11 @@ def main():
     parser.add_argument("--save_freq", default=0, type=int, help="Save a checkpoint every this many episodes (0 to disable)")
     parser.add_argument("--early_stopping_patience", default=0, type=int, help="Stop training if no improvement for this many episodes (0 to disable)")
     parser.add_argument("--seed", default=0, type=int, help="Random seed for reproducibility")
+    parser.add_argument("--memmap", action="store_true", help="Memory-map the replay buffer to disk to save RAM")
+    parser.add_argument("--num_threads", default=8, type=int, help="Number of CPU threads for PyTorch")
     args = parser.parse_args()
+
+    torch.set_num_threads(args.num_threads)
 
     import random
     torch.manual_seed(args.seed)
@@ -149,6 +162,7 @@ def main():
     writer = SummaryWriter(log_dir=f"./runs/{run_name}")
 
     env = Puma560EnvTD3(dt=0.001, rl_decimation=10, lstm_decimation=5, window_size=20, baseline_setting=args.baseline_setting)
+    eval_env = Puma560EnvTD3(dt=0.001, rl_decimation=10, lstm_decimation=5, window_size=20, baseline_setting=args.baseline_setting)
     
     state_dim = 42
     action_dim = 6
@@ -160,7 +174,8 @@ def main():
         print(f"Loading checkpoint from: {args.load_model}")
         agent.load(args.load_model)
 
-    replay_buffer = ReplayBuffer((20, state_dim), action_dim)
+    replay_buffer_dir = f"./replay_buffer_td3_Setting_{args.baseline_setting}" if args.memmap else None
+    replay_buffer = ReplayBuffer((20, state_dim), action_dim, memmap_dir=replay_buffer_dir)
     
     best_error = float('inf')
     total_steps = 0
@@ -220,7 +235,7 @@ def main():
         
         # Evaluation Loop
         if episode % args.eval_freq == 0:
-            eval_reward, eval_error = eval_policy(agent, args.baseline_setting)
+            eval_reward, eval_error = eval_policy(agent, eval_env)
             writer.add_scalar("Eval/Reward", eval_reward, episode)
             writer.add_scalar("Eval/Error", eval_error, episode)
             
@@ -245,6 +260,12 @@ def main():
             saved_str += f" (Saved Ep {episode} Checkpoint)"
                 
         print(f"Ep {episode:03d} | Steps: {t+1:03d} | Total: {total_steps} | Tr. Rwd: {ep_reward:7.1f} | Tr. Err: {tracking_error:6.3f} | C_Loss: {avg_c_loss:5.2f}{saved_str}")
+        
+        # Free memory and trigger garbage collection of circular references (e.g. roboticstoolbox links)
+        import gc
+        gc.collect()
+        if torch.cuda.is_available() and episode % 10 == 0:
+            torch.cuda.empty_cache()
         
         if args.early_stopping_patience > 0 and patience_counter >= args.early_stopping_patience:
             print(f"Early stopping triggered after {episode} episodes. No improvement for {patience_counter} episodes.")

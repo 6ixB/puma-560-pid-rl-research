@@ -214,9 +214,6 @@ def main():
 
         if args.td3:
             print(f"\nRunning TD3 RL - Setting {s}...")
-            print("  Note: TD3 runs on rl_env's simplified plant at a 20ms control step,")
-            print("  while the PID baseline uses full rigid-body dynamics - the two are")
-            print("  not on an identical plant, so treat the comparison as indicative.")
             try:
                 td3_results = run_td3_metrics(s, trajectory, args.duration, args.dt, args.sse_window)
                 mse_td3, ise_td3, sse_td3 = print_table(td3_results, f"TD3 RL - Setting {s}")

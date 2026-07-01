@@ -346,7 +346,7 @@ def main() -> None:
             print(f"\nRunning PID+TD3 (Setting {s}) on Puma560EnvTD3  [checkpoint: {ckpt}] ...")
             max_action = np.array([15.0, 20.0, 15.0, 5.0, 5.0, 3.0])
             actor = TD3Actor(42, 6, max_action).to(device)
-            actor.load_state_dict(torch.load(ckpt, map_location=device))
+            actor.load_state_dict(torch.load(ckpt, map_location=device), strict=False)
             actor.eval()
 
             _, err_td3, _ = run_unified_simulation(

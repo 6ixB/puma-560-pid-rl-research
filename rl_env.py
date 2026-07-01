@@ -1,4 +1,5 @@
 import numpy as np
+from roboticstoolbox import models
 
 # ============================================================================
 # PUMA 560 Dynamic Parameters (6 Joints)
@@ -146,6 +147,7 @@ class Puma560Env:
         self.trajectory = trajectory
         
         self.params = PUMA560Params()
+        self.robot = models.DH.Puma560()
         
         if baseline_setting == 'A':
             self.Kp = np.diag([800.0, 1200.0, 800.0, 200.0, 200.0, 100.0])
@@ -192,14 +194,26 @@ class Puma560Env:
             self.q_ref = q_ref_new
         else:
             # Randomized training trajectory
-            amp = getattr(self, 'traj_amp', 0.5)
-            freq = getattr(self, 'traj_freq', 1.0)
-            phase = getattr(self, 'traj_phase', 0.0)
-            
-            q_ref_val = amp * np.sin(np.pi * freq * t + phase) + 0.2 * np.sin(0.6 * np.pi * freq * t + phase)
-            qd_ref_val = amp * np.pi * freq * np.cos(np.pi * freq * t + phase) + 0.2 * 0.6 * np.pi * freq * np.cos(0.6 * np.pi * freq * t + phase)
-            self.q_ref = np.ones(6) * q_ref_val
-            self.qd_ref = np.ones(6) * qd_ref_val
+            traj_type = getattr(self, 'traj_type', 'sine')
+            if traj_type == 'sine':
+                amp = getattr(self, 'traj_amp', 0.5)
+                freq = getattr(self, 'traj_freq', 1.0)
+                phase = getattr(self, 'traj_phase', 0.0)
+                
+                q_ref_val = amp * np.sin(np.pi * freq * t + phase) + 0.2 * np.sin(0.6 * np.pi * freq * t + phase)
+                qd_ref_val = amp * np.pi * freq * np.cos(np.pi * freq * t + phase) + 0.2 * 0.6 * np.pi * freq * np.cos(0.6 * np.pi * freq * t + phase)
+                self.q_ref = np.ones(6) * q_ref_val
+                self.qd_ref = np.ones(6) * qd_ref_val
+            elif traj_type == 'static':
+                self.q_ref = getattr(self, 'traj_target', np.zeros(6))
+                self.qd_ref = np.zeros(6)
+            elif traj_type == 'step':
+                step_time = getattr(self, 'traj_step_time', 2.5)
+                if t < step_time:
+                    self.q_ref = getattr(self, 'traj_target_initial', np.zeros(6))
+                else:
+                    self.q_ref = getattr(self, 'traj_target_final', np.zeros(6))
+                self.qd_ref = np.zeros(6)
 
     def _get_state(self):
         e = self.q_ref - self.q
@@ -210,9 +224,19 @@ class Puma560Env:
     def _dynamics(self, state, tau):
         q, qd = state[:6], state[6:12]
         tau_fric = compute_friction(qd, self.params)
-        tau_grav = self.params.G_coeff * np.sin(q)
-        C = 0.05 * np.abs(qd) * qd
-        return np.concatenate([qd, (tau - C - tau_grav - tau_fric) / self.params.J])
+        
+        # 1. Coriolis + Gravity bias term calculated in 1 single low-level RNE call (zero allocation & leak-free)
+        C_qd_plus_G = self.robot.rne(q, qd, np.zeros(6))
+        
+        # 2. Inertia matrix M calculated column-by-column using direct RNE calls to bypass high-level memory leaks
+        M = np.empty((6, 6))
+        for j in range(6):
+            qdd_dummy = np.zeros(6)
+            qdd_dummy[j] = 1.0
+            M[:, j] = self.robot.rne(q, np.zeros(6), qdd_dummy, gravity=[0, 0, 0])
+            
+        qdd = np.linalg.inv(M) @ (tau - C_qd_plus_G - tau_fric)
+        return np.concatenate([qd, qdd])
 
     def reset(self, episode=0):
         self.q = np.zeros(6)
@@ -226,9 +250,17 @@ class Puma560Env:
         for m in self.motors: m.reset()
         
         # Randomize trajectory params
-        self.traj_amp = np.random.uniform(0.3, 0.7)
-        self.traj_freq = np.random.uniform(0.8, 1.2)
-        self.traj_phase = np.random.uniform(0, 2*np.pi)
+        self.traj_type = np.random.choice(['sine', 'static', 'step'])
+        if self.traj_type == 'sine':
+            self.traj_amp = np.random.uniform(0.3, 0.7)
+            self.traj_freq = np.random.uniform(0.8, 1.2)
+            self.traj_phase = np.random.uniform(0, 2*np.pi)
+        elif self.traj_type == 'static':
+            self.traj_target = np.random.uniform(-1.0, 1.0, size=6)
+        elif self.traj_type == 'step':
+            self.traj_target_initial = np.random.uniform(-1.0, 1.0, size=6)
+            self.traj_target_final = np.random.uniform(-1.0, 1.0, size=6)
+            self.traj_step_time = np.random.uniform(1.0, 4.0)
         
         self._update_reference(0.0)
         self.q = np.copy(self.q_ref)  # Spawn robot exactly on the trajectory start point
@@ -327,7 +359,7 @@ class Puma560Env:
         reward = float(np.clip(r_track + r_energy + r_smoothness + r_stability, -20.0, 20.0))
         
         terminated = self.episode_length >= 500
-        truncated = np.max(np.abs(e_final)) > 0.5
+        truncated = np.max(np.abs(e_final)) > 3.0
         if truncated: reward -= 10.0
         elif terminated: reward += 10.0
             
@@ -418,10 +450,7 @@ class Puma560EnvTD3(Puma560Env):
         # 1. Tracking Reward (r_track)
         # Penalizes the agent for failing to follow the reference trajectory.
         # - Weight tracking errors inversely to their baseline MSE to balance multi-joint learning.
-        # - We normalize the weights so their mean is 1.0. This prevents the total reward magnitude
-        # - from blowing up and hitting the [-20.0, 20.0] clip limit, which destroys learning gradients.
-        raw_weights = np.array([2.5, 1.0, 5.5, 75.0, 82.0, 18.0])
-        joint_weights = raw_weights / np.mean(raw_weights)
+        joint_weights = np.array([2.5, 1.0, 5.5, 75.0, 82.0, 18.0])
         r_track = -10.0 * np.sum(joint_weights * (e_final**2)) - 1.0 * np.sum(joint_weights * (ed_final**2)) - 0.5 * np.sum(joint_weights * (self.e_int**2))
         
         # 2. Energy Reward (r_energy)
@@ -446,7 +475,7 @@ class Puma560EnvTD3(Puma560Env):
         reward = float(np.clip(r_track + r_energy + r_smoothness + r_stability, -20.0, 20.0))
         
         terminated = self.episode_length >= 500
-        truncated = np.max(np.abs(e_final)) > 0.5
+        truncated = np.max(np.abs(e_final)) > 3.0
         if truncated: reward -= 10.0
         elif terminated: reward += 10.0
             

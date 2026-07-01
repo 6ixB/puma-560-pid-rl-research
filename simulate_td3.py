@@ -60,7 +60,7 @@ def main():
         actor = TD3Actor(state_dim, action_dim, max_action).to(device)
         
         try:
-            actor.load_state_dict(torch.load(run['checkpoint'], map_location=device))
+            actor.load_state_dict(torch.load(run['checkpoint'], map_location=device), strict=False)
             actor.eval()
             print(f"Successfully loaded checkpoint: {run['checkpoint']}")
         except FileNotFoundError:
@@ -185,7 +185,7 @@ def run_td3_simulation(baseline_setting, duration, dt, q0_rad, trajectory):
     
     checkpoint_path = f"checkpoints/Setting_{baseline_setting}/td3_best_actor"
     try:
-        actor.load_state_dict(torch.load(checkpoint_path, map_location=device))
+        actor.load_state_dict(torch.load(checkpoint_path, map_location=device), strict=False)
         actor.eval()
     except FileNotFoundError as e:
         raise FileNotFoundError(f"Missing checkpoint: {checkpoint_path}. Please train this setting first!") from e

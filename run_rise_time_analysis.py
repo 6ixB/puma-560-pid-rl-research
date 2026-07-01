@@ -438,7 +438,7 @@ def main() -> None:
             print(f"\n[2/2] PID+TD3 step simulation  (checkpoint: {ckpt}) ...")
             max_action = np.array([15.0, 20.0, 15.0, 5.0, 5.0, 3.0])
             actor = TD3Actor(42, 6, max_action).to(device)
-            actor.load_state_dict(torch.load(ckpt, map_location=device))
+            actor.load_state_dict(torch.load(ckpt, map_location=device), strict=False)
             actor.eval()
 
             time_rl, q_rl = run_step_simulation(

@@ -6,16 +6,25 @@ import numpy as np
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class ReplayBuffer:
-    def __init__(self, state_shape, action_dim, max_size=1000000):
+    def __init__(self, state_shape, action_dim, max_size=1000000, memmap_dir=None):
         self.max_size = max_size
         self.ptr = 0
         self.size = 0
         
-        self.state = np.zeros((max_size, *state_shape), dtype=np.float32)
-        self.action = np.zeros((max_size, action_dim), dtype=np.float32)
-        self.next_state = np.zeros((max_size, *state_shape), dtype=np.float32)
-        self.reward = np.zeros((max_size, 1), dtype=np.float32)
-        self.not_done = np.zeros((max_size, 1), dtype=np.float32)
+        if memmap_dir is not None:
+            import os
+            os.makedirs(memmap_dir, exist_ok=True)
+            self.state = np.memmap(os.path.join(memmap_dir, 'state.dat'), dtype=np.float32, mode='w+', shape=(max_size, *state_shape))
+            self.action = np.memmap(os.path.join(memmap_dir, 'action.dat'), dtype=np.float32, mode='w+', shape=(max_size, action_dim))
+            self.next_state = np.memmap(os.path.join(memmap_dir, 'next_state.dat'), dtype=np.float32, mode='w+', shape=(max_size, *state_shape))
+            self.reward = np.memmap(os.path.join(memmap_dir, 'reward.dat'), dtype=np.float32, mode='w+', shape=(max_size, 1))
+            self.not_done = np.memmap(os.path.join(memmap_dir, 'not_done.dat'), dtype=np.float32, mode='w+', shape=(max_size, 1))
+        else:
+            self.state = np.zeros((max_size, *state_shape), dtype=np.float32)
+            self.action = np.zeros((max_size, action_dim), dtype=np.float32)
+            self.next_state = np.zeros((max_size, *state_shape), dtype=np.float32)
+            self.reward = np.zeros((max_size, 1), dtype=np.float32)
+            self.not_done = np.zeros((max_size, 1), dtype=np.float32)
 
     def add(self, state, action, next_state, reward, done):
         self.state[self.ptr] = state
@@ -30,12 +39,48 @@ class ReplayBuffer:
     def sample(self, batch_size):
         ind = np.random.randint(0, self.size, size=batch_size)
 
+        # Pre-allocate batch arrays to prevent memory allocation and fragmentation leaks
+        if not hasattr(self, '_batch_state') or self._batch_state.shape[0] != batch_size:
+            self._batch_state = np.empty((batch_size, *self.state.shape[1:]), dtype=np.float32)
+            self._batch_action = np.empty((batch_size, self.action.shape[1]), dtype=np.float32)
+            self._batch_next_state = np.empty((batch_size, *self.next_state.shape[1:]), dtype=np.float32)
+            self._batch_reward = np.empty((batch_size, 1), dtype=np.float32)
+            self._batch_not_done = np.empty((batch_size, 1), dtype=np.float32)
+            
+            # Pre-allocate numpy-to-torch wrappers (shares memory, zero allocation after first time)
+            self._np_state_wrapper = torch.from_numpy(self._batch_state)
+            self._np_action_wrapper = torch.from_numpy(self._batch_action)
+            self._np_next_state_wrapper = torch.from_numpy(self._batch_next_state)
+            self._np_reward_wrapper = torch.from_numpy(self._batch_reward)
+            self._np_not_done_wrapper = torch.from_numpy(self._batch_not_done)
+            
+            # Pre-allocate PyTorch device tensors
+            self._batch_state_t = torch.empty((batch_size, *self.state.shape[1:]), device=device, dtype=torch.float32)
+            self._batch_action_t = torch.empty((batch_size, self.action.shape[1]), device=device, dtype=torch.float32)
+            self._batch_next_state_t = torch.empty((batch_size, *self.next_state.shape[1:]), device=device, dtype=torch.float32)
+            self._batch_reward_t = torch.empty((batch_size, 1), device=device, dtype=torch.float32)
+            self._batch_not_done_t = torch.empty((batch_size, 1), device=device, dtype=torch.float32)
+
+        # Copy data directly into the pre-allocated buffers
+        np.take(self.state, ind, axis=0, out=self._batch_state)
+        np.take(self.action, ind, axis=0, out=self._batch_action)
+        np.take(self.next_state, ind, axis=0, out=self._batch_next_state)
+        np.take(self.reward, ind, axis=0, out=self._batch_reward)
+        np.take(self.not_done, ind, axis=0, out=self._batch_not_done)
+
+        # Copy to pre-allocated PyTorch device tensors in-place using cached wrappers (zero allocations!)
+        self._batch_state_t.copy_(self._np_state_wrapper)
+        self._batch_action_t.copy_(self._np_action_wrapper)
+        self._batch_next_state_t.copy_(self._np_next_state_wrapper)
+        self._batch_reward_t.copy_(self._np_reward_wrapper)
+        self._batch_not_done_t.copy_(self._np_not_done_wrapper)
+
         return (
-            torch.FloatTensor(self.state[ind]).to(device),
-            torch.FloatTensor(self.action[ind]).to(device),
-            torch.FloatTensor(self.next_state[ind]).to(device),
-            torch.FloatTensor(self.reward[ind]).to(device),
-            torch.FloatTensor(self.not_done[ind]).to(device)
+            self._batch_state_t,
+            self._batch_action_t,
+            self._batch_next_state_t,
+            self._batch_reward_t,
+            self._batch_not_done_t
         )
 
 class LSTMFeatureExtractor(nn.Module):
@@ -44,6 +89,8 @@ class LSTMFeatureExtractor(nn.Module):
         self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True)
         
     def forward(self, x):
+        # Force weights to be contiguous to prevent cuDNN memory reallocation/fragmentation
+        self.lstm.flatten_parameters()
         # x is (batch, seq_len, input_dim)
         out, (h_n, c_n) = self.lstm(x)
         # return the last time step's output feature
@@ -74,7 +121,7 @@ class TD3Actor(nn.Module):
         
         if max_action is None:
             max_action = np.array([15.0, 20.0, 15.0, 5.0, 5.0, 3.0])
-        self.max_action = torch.FloatTensor(max_action).to(device)
+        self.register_buffer('max_action', torch.FloatTensor(max_action))
         
     def forward(self, state_history):
         lstm_features = self.lstm(state_history)
