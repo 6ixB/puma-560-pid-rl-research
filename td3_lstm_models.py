@@ -103,8 +103,8 @@ class TD3Actor(nn.Module):
         # Extract temporal features from the last 20 timesteps (window_size) of state history
         self.lstm = LSTMFeatureExtractor(state_dim, hidden_dim, num_layers=2)
         
-        self.register_buffer('c_t', torch.FloatTensor([0.0, 1.0, 1.0, 0.5, 0.0, 0.0]))
-        context_dim = 6
+        # Context dimension is now embedded directly in the 44-dim state vector
+        context_dim = 0
         
         # Layer 1: Combines LSTM temporal features + instantaneous current state + context vector
         self.l1 = nn.Linear(hidden_dim + state_dim + context_dim, 256)
@@ -127,8 +127,7 @@ class TD3Actor(nn.Module):
         lstm_features = self.lstm(state_history)
         current_state = state_history[:, -1, :]
         
-        c_t_batch = self.c_t.unsqueeze(0).expand(current_state.size(0), -1)
-        x = torch.cat([lstm_features, current_state, c_t_batch], dim=1)
+        x = torch.cat([lstm_features, current_state], dim=1)
         x = F.relu(self.ln1(self.l1(x)))
         x = F.relu(self.ln2(self.l2(x)))
         # Tanh bounds output to [-1, 1], we multiply by max_action limits
@@ -143,8 +142,8 @@ class TD3Critic(nn.Module):
         self.lstm1 = LSTMFeatureExtractor(state_dim, hidden_dim, num_layers=2)
         self.lstm2 = LSTMFeatureExtractor(state_dim, hidden_dim, num_layers=2)
         
-        self.register_buffer('c_t', torch.FloatTensor([0.0, 1.0, 1.0, 0.5, 0.0, 0.0]))
-        context_dim = 6
+        # Context dimension is now embedded directly in the 44-dim state vector
+        context_dim = 0
         
         # Max action for normalization
         max_action = np.array([15.0, 20.0, 15.0, 5.0, 5.0, 3.0])
@@ -175,11 +174,10 @@ class TD3Critic(nn.Module):
         lstm_feat2 = self.lstm2(state_history)
         current_state = state_history[:, -1, :]
         
-        c_t_batch = self.c_t.unsqueeze(0).expand(current_state.size(0), -1)
         norm_action = action / self.max_action
         
-        sa1 = torch.cat([lstm_feat1, current_state, c_t_batch, norm_action], dim=1)
-        sa2 = torch.cat([lstm_feat2, current_state, c_t_batch, norm_action], dim=1)
+        sa1 = torch.cat([lstm_feat1, current_state, norm_action], dim=1)
+        sa2 = torch.cat([lstm_feat2, current_state, norm_action], dim=1)
 
         q1 = F.relu(self.ln1(self.l1(sa1)))
         q1 = F.relu(self.ln2(self.l2(q1)))
@@ -194,10 +192,9 @@ class TD3Critic(nn.Module):
         lstm_feat1 = self.lstm1(state_history)
         current_state = state_history[:, -1, :]
         
-        c_t_batch = self.c_t.unsqueeze(0).expand(current_state.size(0), -1)
         norm_action = action / self.max_action
         
-        sa1 = torch.cat([lstm_feat1, current_state, c_t_batch, norm_action], dim=1)
+        sa1 = torch.cat([lstm_feat1, current_state, norm_action], dim=1)
 
         q1 = F.relu(self.ln1(self.l1(sa1)))
         q1 = F.relu(self.ln2(self.l2(q1)))

@@ -164,7 +164,7 @@ def main():
     env = Puma560EnvTD3(dt=0.001, rl_decimation=10, lstm_decimation=5, window_size=20, baseline_setting=args.baseline_setting)
     eval_env = Puma560EnvTD3(dt=0.001, rl_decimation=10, lstm_decimation=5, window_size=20, baseline_setting=args.baseline_setting)
     
-    state_dim = 42
+    state_dim = 44
     action_dim = 6
     max_action = np.array([15.0, 20.0, 15.0, 5.0, 5.0, 3.0])
     

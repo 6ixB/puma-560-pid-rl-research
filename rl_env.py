@@ -94,14 +94,12 @@ class SafetyCage:
         self.lambda_min_Kd = np.min(np.diag(Kd))
         self.Delta_max = 1.0
         self.Pmax = 50.0
-        self.alpha = 0.05
+        self.alpha = 0.30
         self.beta = 0.1
     
     def update_alpha(self, episode, total_episodes=300, critic_uncertainty=0.0):
-        base_alpha = min(0.05 + 0.25 * episode / total_episodes, 0.30)
-        # Critic-Aware: Reduce alpha if critic is highly uncertain
-        penalty = np.clip(critic_uncertainty * 0.005, 0.0, base_alpha - 0.01)
-        self.alpha = base_alpha - penalty
+        # Disabled Curriculum: alpha is constant
+        self.alpha = 0.30
         return self.alpha
         
     def compute_alpha_max(self, s, tau_pid):
@@ -176,13 +174,14 @@ class Puma560Env:
         self.qd = np.zeros(6)
         self.e_int = np.zeros(6)
         self.tau_residual_prev = np.zeros(6)
+        self.tau_raw_prev = np.zeros(6)
         self.step_count = 0
         self.episode_length = 0
         
         self.q_ref = np.zeros(6)
         self.qd_ref = np.zeros(6)
         
-        self.history = np.zeros((self.window_size, 42), dtype=np.float32)
+        self.history = np.zeros((self.window_size, 44), dtype=np.float32)
 
     def _update_reference(self, t):
         if self.trajectory is not None:
@@ -218,7 +217,21 @@ class Puma560Env:
     def _get_state(self):
         e = self.q_ref - self.q
         ed = self.qd_ref - self.qd
-        state = np.concatenate([self.q, self.qd, e, ed, self.e_int, self.q_ref, self.tau_residual_prev])
+        
+        t_curr = self.step_count * self.rl_decimation * self.dt
+        phase_sin = np.sin(2 * np.pi * 0.5 * t_curr)
+        phase_cos = np.cos(2 * np.pi * 0.5 * t_curr)
+        
+        # Manually scale inputs to sit roughly between -1.0 and 1.0
+        norm_q = self.q / np.pi
+        norm_qd = self.qd / 5.0
+        norm_e = e / 1.0 
+        norm_ed = ed / 5.0
+        norm_e_int = self.e_int / 10.0
+        norm_q_ref = self.q_ref / np.pi
+        norm_tau_prev = self.tau_residual_prev / 20.0
+        
+        state = np.concatenate([norm_q, norm_qd, norm_e, norm_ed, norm_e_int, norm_q_ref, norm_tau_prev, [phase_sin, phase_cos]])
         return state.astype(np.float32)
 
     def _dynamics(self, state, tau):
@@ -243,6 +256,7 @@ class Puma560Env:
         self.qd = np.zeros(6)
         self.e_int = np.zeros(6)
         self.tau_residual_prev = np.zeros(6)
+        self.tau_raw_prev = np.zeros(6)
         self.step_count = 0
         self.episode_length = 0
         
@@ -319,10 +333,9 @@ class Puma560Env:
         e_final = self.q_ref - self.q
         ed_final = self.qd_ref - self.qd
         
-        # Curriculum Penalty Decay (Ramps up over first 150 episodes)
-        progress = np.clip(episode / 150.0, 0.0, 1.0)
-        w_energy = 0.001 * progress
-        w_jerk = 0.1 * progress
+        # Curriculum Penalty Decay Disabled (Environment is frozen at final difficulty)
+        w_energy = 0.001
+        w_jerk = 0.1
         
         # ====================================================================
         # REWARD FUNCTION BREAKDOWN
@@ -356,7 +369,10 @@ class Puma560Env:
         # Gives a flat +1.0 bonus if the agent perfectly tracks the trajectory (all errors < 0.01 radians).
         r_stability = 1.0 if np.max(np.abs(e_final)) < 0.01 else 0.0
         
-        reward = float(np.clip(r_track + r_energy + r_smoothness + r_stability, -20.0, 20.0))
+        # 5. Action L2 Regularization Penalty
+        r_action_l2 = -0.01 * np.sum((tau_residual_raw / max_action)**2)
+        
+        reward = float(np.clip(r_track + r_energy + r_smoothness + r_stability + r_action_l2, -20.0, 20.0))
         
         terminated = self.episode_length >= 500
         truncated = np.max(np.abs(e_final)) > 3.0
@@ -383,14 +399,29 @@ class Puma560EnvTD3(Puma560Env):
         ed = self.qd_ref - self.qd
         # Research script concatenates [q, qd, e, ed, e_int, q_ref, qd_ref, tau_residual_prev] 
         # and then takes [:42], which exactly captures everything up to qd_ref (6 * 7 = 42).
+        
+        t_curr = self.step_count * self.rl_decimation * self.dt
+        phase_sin = np.sin(2 * np.pi * 0.5 * t_curr)
+        phase_cos = np.cos(2 * np.pi * 0.5 * t_curr)
+        
+        # Manually scale inputs to sit roughly between -1.0 and 1.0
+        norm_q = self.q / np.pi
+        norm_qd = self.qd / 5.0
+        norm_e = e / 1.0
+        norm_ed = ed / 5.0
+        norm_e_int = self.e_int / 10.0
+        norm_q_ref = self.q_ref / np.pi
+        norm_qd_ref = getattr(self, 'qd_ref', np.zeros(6)) / 5.0
+        
         state = np.concatenate([
-            self.q, 
-            self.qd, 
-            e, 
-            ed, 
-            self.e_int, 
-            self.q_ref, 
-            getattr(self, 'qd_ref', np.zeros(6))
+            norm_q, 
+            norm_qd, 
+            norm_e, 
+            norm_ed, 
+            norm_e_int, 
+            norm_q_ref, 
+            norm_qd_ref,
+            [phase_sin, phase_cos]
         ])
         return state.astype(np.float32)
 
@@ -450,7 +481,8 @@ class Puma560EnvTD3(Puma560Env):
         # 1. Tracking Reward (r_track)
         # Penalizes the agent for failing to follow the reference trajectory.
         # - Weight tracking errors inversely to their baseline MSE to balance multi-joint learning.
-        joint_weights = np.array([2.5, 1.0, 5.5, 75.0, 82.0, 18.0])
+        raw_weights = np.array([2.5, 1.0, 5.5, 75.0, 82.0, 18.0])
+        joint_weights = raw_weights / np.mean(raw_weights)
         r_track = -10.0 * np.sum(joint_weights * (e_final**2)) - 1.0 * np.sum(joint_weights * (ed_final**2)) - 0.5 * np.sum(joint_weights * (self.e_int**2))
         
         # 2. Energy Reward (r_energy)
@@ -465,18 +497,27 @@ class Puma560EnvTD3(Puma560Env):
         # 3. Smoothness Reward (r_smoothness)
         # Penalizes "jerk" or sudden massive changes in torque from one timestep to the next.
         # - Also normalized by max_action to ensure fair punishment across all joints.
-        norm_tau_prev = self.tau_residual_prev / max_action
-        r_smoothness = -w_jerk * np.sum((norm_tau - norm_tau_prev)**2)
+        norm_tau_raw_prev = self.tau_raw_prev / max_action
+        norm_tau_raw = tau_residual_raw / max_action
+        r_smoothness = -w_jerk * np.sum((norm_tau_raw - norm_tau_raw_prev)**2)
         
         # 4. Stability Reward (r_stability)
         # Gives a flat +1.0 bonus if the agent perfectly tracks the trajectory (all errors < 0.01 radians).
         r_stability = 1.0 if np.max(np.abs(e_final)) < 0.01 else 0.0
         
-        reward = float(np.clip(r_track + r_energy + r_smoothness + r_stability, -20.0, 20.0))
+        # 5. Cage Penalty
+        w_cage = 0.05
+        r_cage = -w_cage * np.sum((norm_tau_raw - norm_tau)**2)
+        
+        # 6. Action L2 Regularization Penalty
+        r_action_l2 = -0.01 * np.sum((tau_residual_raw / max_action)**2)
+        
+        reward = float(np.clip(r_track + r_energy + r_smoothness + r_stability + r_cage + r_action_l2, -20.0, 20.0))
         
         terminated = self.episode_length >= 500
         truncated = np.max(np.abs(e_final)) > 3.0
         if truncated: reward -= 10.0
         elif terminated: reward += 10.0
             
+        self.tau_raw_prev = tau_residual_raw
         return np.copy(self.history), reward, terminated, truncated, {'error': np.linalg.norm(e_final), 'actual_action': tau_residual}
