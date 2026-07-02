@@ -14,7 +14,7 @@ class TD3Agent:
         self.sigma_explore = 0.2
         self.sigma_target = 0.5
         self.c_noise_clip = 1.0
-        self.batch_size = 256
+        self.batch_size = 256  # 1. Batch size is confirmed to be 256
         self.discount = 0.99
         self.tau = 0.005
         self.d_policy_freq = 2
@@ -63,6 +63,9 @@ class TD3Agent:
         critic_loss = F.mse_loss(current_Q1, y) + F.mse_loss(current_Q2, y)
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
+        
+        # 2. Gradient Clipping added for the Critic to prevent loss explosion
+        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=1.0)
         self.critic_optimizer.step()
 
         # Line 17: if t mod d == 0 then
@@ -72,6 +75,9 @@ class TD3Agent:
             actor_loss = -q1_out.mean()
             self.actor_optimizer.zero_grad()
             actor_loss.backward()
+            
+            # 2. Gradient Clipping added for the Actor 
+            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=1.0)
             self.actor_optimizer.step()
 
             # Line 19: Soft update targets
@@ -182,6 +188,12 @@ def main():
         writer.add_scalar("Train/Error", tracking_error, k)
         writer.add_scalar("Train/Critic_Loss", avg_c, k)
         writer.add_scalar("Train/Alpha", alpha, k)
+        
+        # 3. Periodic Replay Buffer Action: Clear buffer every 50 episodes
+        if k % 50 == 0:
+            agent.replay_buffer.ptr = 0
+            agent.replay_buffer.size = 0
+            print(f"  [Action] Replay Buffer flushed at episode {k} to clear stale curriculum data.")
         
         print(f"Ep {k:03d} | Rwd: {ep_reward:7.1f} | Err: {tracking_error:6.3f} | α: {alpha:.3f} | C_Loss: {avg_c:5.2f}")
 
