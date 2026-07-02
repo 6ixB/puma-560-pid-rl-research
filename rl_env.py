@@ -174,7 +174,8 @@ class Puma560EnvTD3:
 
     def compute_reward(self, e_final, ed_final, tau_residual, tau_total):
         # Normalized tracking reward to ensure stable gradients
-        weights = np.array([2.5, 1.0, 5.5, 75.0, 82.0, 18.0])
+        # Weights derived from Inverse Baseline PID MSE to guarantee equal learning distribution
+        weights = np.array([0.0725, 0.1059, 0.4290, 2.4099, 2.1500, 0.8327])
         w = weights / np.mean(weights)
         
         r_track = -1.0 * np.sum(w * (e_final**2))
