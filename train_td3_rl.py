@@ -23,8 +23,9 @@ class TD3Agent:
         self.max_action_tensor = torch.FloatTensor(max_action).to(device)
         
         # Line 1: Initialize actor pi_theta, critics Q_phi1, Q_phi2, replay buffer D
-        self.actor = TD3Actor(state_dim=304, action_dim=6, max_action=max_action).to(device)
-        self.critic = TD3Critic(state_dim=304, action_dim=6).to(device)
+        # State dim is 36 (s_t) + 256 (h_t) + 6 (c_t) = 298
+        self.actor = TD3Actor(state_dim=298, action_dim=6, max_action=max_action).to(device)
+        self.critic = TD3Critic(state_dim=298, action_dim=6).to(device)
         
         # Line 2: Initialize target networks
         self.actor_target = copy.deepcopy(self.actor)
@@ -33,8 +34,9 @@ class TD3Agent:
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=3e-4)
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=3e-4)
         
-        self.replay_buffer = ReplayBuffer(state_dim=304, action_dim=6)
-        self.temporal_observer = LSTMTemporalObserver().to(device)
+        self.replay_buffer = ReplayBuffer(state_dim=298, action_dim=6)
+        # Override the default 42 from the paper's typo to the actual 36
+        self.temporal_observer = LSTMTemporalObserver(input_dim=36).to(device)
         self.total_it = 0
 
     def select_action(self, s_tilde_t):
