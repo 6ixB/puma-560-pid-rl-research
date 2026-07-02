@@ -129,7 +129,22 @@ class SafetyCage:
         if a_max < self.alpha:
             tau_safe *= (a_max / self.alpha)
             
+<<<<<<< Updated upstream
         return np.clip(tau_safe, -PUMA560Params.tau_max, PUMA560Params.tau_max)
+=======
+        # 21-26: 4. Lyapunov Stability Condition Enforcement
+        lambda_min = np.min(np.diag(self.Kd))
+        Delta_max = 1.0
+        numerator = lambda_min * np.linalg.norm(s) - Delta_max
+        alpha_max = max(0.0, numerator / (tau_pid_norm + self.eps))
+        
+        if alpha_max < alpha:
+            tau_safe = tau_safe * (alpha_max / (alpha + self.eps))
+            
+        # 27: Apply torque limits to ensure mathematical bounds
+        tau_safe = np.clip(tau_safe, -self.tau_max, self.tau_max)
+        return tau_safe, V_t
+>>>>>>> Stashed changes
 
 class Puma560Env:
     """
@@ -333,9 +348,24 @@ class Puma560Env:
         e_final = self.q_ref - self.q
         ed_final = self.qd_ref - self.qd
         
+<<<<<<< Updated upstream
         # Curriculum Penalty Decay Disabled (Environment is frozen at final difficulty)
         w_energy = 0.001
         w_jerk = 0.1
+=======
+        # Prioritize tracking over energy reservation by heavily weighting the tracking error
+        r_track = -10.0 * np.mean(w * (e_final**2))
+        
+        # Normalized energy penalty: mathematically aligned with each joint's max limit
+        # Using np.mean ensures the penalty doesn't scale linearly with the number of joints,
+        # acting as a secondary regularizer that won't overpower trajectory fixing.
+        norm_tau_res = tau_residual / self.params.tau_max
+        norm_tau_tot = tau_total / self.params.tau_max
+        
+        r_energy = -0.1 * np.mean(norm_tau_res**2) - 0.01 * np.mean(norm_tau_tot**2)
+        
+        r_stab = 1.0 if np.max(np.abs(e_final)) < 0.01 else 0.0
+>>>>>>> Stashed changes
         
         # ====================================================================
         # REWARD FUNCTION BREAKDOWN
