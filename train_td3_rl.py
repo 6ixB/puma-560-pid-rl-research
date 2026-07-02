@@ -11,20 +11,18 @@ from td3_lstm_models import TD3Actor, TD3Critic, ReplayBuffer, LSTMTemporalObser
 class TD3Agent:
     """Algorithm 3 Logic encapsulated"""
     def __init__(self):
-        self.sigma_explore = 0.2
-        self.sigma_target = 0.5
-        self.c_noise_clip = 1.0
+        # Noise scaled down to match normalized [-1.0, 1.0] action space
+        self.sigma_explore = 0.1
+        self.sigma_target = 0.2
+        self.c_noise_clip = 0.5
         self.batch_size = 256  # 1. Batch size is confirmed to be 256
         self.discount = 0.99
         self.tau = 0.005
         self.d_policy_freq = 2
         
-        max_action = np.array([15., 20., 15., 5., 5., 3.])
-        self.max_action_tensor = torch.FloatTensor(max_action).to(device)
-        
         # Line 1: Initialize actor pi_theta, critics Q_phi1, Q_phi2, replay buffer D
         # State dim is 36 (s_t) + 256 (h_t) + 6 (c_t) = 298
-        self.actor = TD3Actor(state_dim=298, action_dim=6, max_action=max_action).to(device)
+        self.actor = TD3Actor(state_dim=298, action_dim=6).to(device)
         self.critic = TD3Critic(state_dim=298, action_dim=6).to(device)
         
         # Line 2: Initialize target networks
@@ -51,7 +49,8 @@ class TD3Agent:
 
         with torch.no_grad():
             noise = (torch.randn_like(action) * self.sigma_target).clamp(-self.c_noise_clip, self.c_noise_clip)
-            next_action = (self.actor_target(next_state) + noise * self.max_action_tensor).clamp(-self.max_action_tensor, self.max_action_tensor)
+            # Action Normalization: Target action bounded to [-1.0, 1.0]
+            next_action = (self.actor_target(next_state) + noise).clamp(-1.0, 1.0)
             
             # Line 15: Compute target value y
             target_Q1, target_Q2 = self.critic_target(next_state, next_action)
@@ -71,7 +70,7 @@ class TD3Agent:
         # Line 17: if t mod d == 0 then
         if self.total_it % self.d_policy_freq == 0:
             # Line 18: Update actor
-            q1_out, _ = self.critic(state, self.actor(state))
+            q1_out = self.critic.Q1(state, self.actor(state))
             actor_loss = -q1_out.mean()
             self.actor_optimizer.zero_grad()
             actor_loss.backward()
@@ -103,6 +102,7 @@ def main():
     env = Puma560EnvTD3()
     agent = TD3Agent()
     c_t = np.array([0.0, 1.0, 1.0, 0.5, 0.0, 0.0]) # Context dimension matching visual
+    max_action = np.array([15., 20., 15., 5., 5., 3.]) # Real physical limits
     
     run_name = f"algo5_exact_run_{time.strftime('%Y%m%d-%H%M%S')}"
     writer = SummaryWriter(log_dir=f"./runs/{run_name}")
@@ -136,15 +136,19 @@ def main():
             s_t = X_t[-1]
             s_tilde_t = np.concatenate([s_t, h_t, c_t])
             
-            # 9: Select action a_t <- pi_theta(s_tilde_t) + noise
-            a_t = agent.select_action(s_tilde_t)
-            a_t = a_t + np.random.normal(0, agent.sigma_explore, size=6)
+            # 9: Select NORMALIZED action a_t_norm <- pi_theta(s_tilde_t) + noise
+            a_t_norm = agent.select_action(s_tilde_t)
+            a_t_norm = a_t_norm + np.random.normal(0, agent.sigma_explore, size=6)
+            a_t_norm = np.clip(a_t_norm, -1.0, 1.0)
+            
+            # Scale to physical bounds immediately before passing to the environment
+            a_t_env = a_t_norm * max_action
             
             # (Line 10 handled by inner loop implicitly)
             
-            # 11: SAFETYCAGE(a_t, tau_PID, alpha) -> tau_RL_safe
+            # 11: SAFETYCAGE(a_t_env, tau_PID, alpha) -> tau_RL_safe
             tau_rl_safe, _ = env.safety_cage.apply(
-                tau_rl_raw=a_t, 
+                tau_rl_raw=a_t_env, 
                 tau_pid=tau_pid, 
                 e=e, ed=ed, 
                 alpha=alpha, 
@@ -161,9 +165,9 @@ def main():
             h_next, c_hidden_next = agent.temporal_observer(X_t_next, h_t, c_hidden_t)
             s_tilde_t_next = np.concatenate([s_t_next, h_next, c_t])
             
-            # 14: Store (s_tilde_t, a_t, r_t, s_tilde_t_next, done) in D
-            # Note: We store the RAW action (a_t) as dictated by Alg 5
-            agent.replay_buffer.add(s_tilde_t, a_t, s_tilde_t_next, reward, done)
+            # 14: Store (s_tilde_t, a_t_norm, r_t, s_tilde_t_next, done) in D
+            # Note: We store the NORMALIZED action (a_t_norm) bounded to [-1, 1]
+            agent.replay_buffer.add(s_tilde_t, a_t_norm, s_tilde_t_next, reward, done)
             
             # 15: if |D| > batch_size then
             if agent.replay_buffer.size > agent.batch_size:

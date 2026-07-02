@@ -38,7 +38,7 @@ class ReplayBuffer:
 # Algorithm 2 & 5: Temporal Observer Components
 # ============================================================================
 class LSTMTemporalObserver(nn.Module):
-    def __init__(self, input_dim=42, hidden_dim=256):
+    def __init__(self, input_dim=36, hidden_dim=256):
         super().__init__()
         self.lstm = nn.LSTM(input_dim, hidden_dim, batch_first=True)
         self.hidden_dim = hidden_dim
@@ -62,36 +62,32 @@ class LSTMTemporalObserver(nn.Module):
 # Algorithm 3: TD3 Actor and Critic
 # ============================================================================
 class TD3Actor(nn.Module):
-    def __init__(self, state_dim=304, action_dim=6, max_action=None):
+    def __init__(self, state_dim=298, action_dim=6):
         super().__init__()
+        # Layer Normalization added to all hidden layers
         self.l1 = nn.Linear(state_dim, 256)
         self.ln1 = nn.LayerNorm(256)
         self.l2 = nn.Linear(256, 128)
         self.ln2 = nn.LayerNorm(128)
         self.l3 = nn.Linear(128, action_dim)
         
-        if max_action is None: max_action = np.array([15., 20., 15., 5., 5., 3.])
-        self.register_buffer('max_action', torch.FloatTensor(max_action))
-        
     def forward(self, state):
         x = F.relu(self.ln1(self.l1(state)))
         x = F.relu(self.ln2(self.l2(x)))
-        return torch.tanh(self.l3(x)) * self.max_action
+        # Action Normalization: Actor strictly outputs in [-1, 1]. No scaling here.
+        return torch.tanh(self.l3(x))
 
 class TD3Critic(nn.Module):
-    def __init__(self, state_dim=304, action_dim=6):
+    def __init__(self, state_dim=298, action_dim=6):
         super().__init__()
-        max_action = np.array([15., 20., 15., 5., 5., 3.])
-        self.register_buffer('max_action', torch.FloatTensor(max_action))
-        
-        # Q1 Architecture
+        # Q1 Architecture with LayerNorm
         self.l1 = nn.Linear(state_dim + action_dim, 256)
         self.ln1 = nn.LayerNorm(256)
         self.l2 = nn.Linear(256, 128)
         self.ln2 = nn.LayerNorm(128)
         self.l3 = nn.Linear(128, 1)
 
-        # Q2 Architecture 
+        # Q2 Architecture with LayerNorm
         self.l4 = nn.Linear(state_dim + action_dim, 256)
         self.ln4 = nn.LayerNorm(256)
         self.l5 = nn.Linear(256, 128)
@@ -99,8 +95,8 @@ class TD3Critic(nn.Module):
         self.l6 = nn.Linear(128, 1)
 
     def forward(self, state, action):
-        norm_action = action / self.max_action
-        sa = torch.cat([state, norm_action], dim=1)
+        # Action Normalization: Critic expects action to already be in [-1, 1]. No division here.
+        sa = torch.cat([state, action], dim=1)
 
         q1 = F.relu(self.ln1(self.l1(sa)))
         q1 = F.relu(self.ln2(self.l2(q1)))
@@ -110,3 +106,10 @@ class TD3Critic(nn.Module):
         q2 = F.relu(self.ln5(self.l5(q2)))
         q2 = self.l6(q2)
         return q1, q2
+        
+    def Q1(self, state, action):
+        sa = torch.cat([state, action], dim=1)
+        q1 = F.relu(self.ln1(self.l1(sa)))
+        q1 = F.relu(self.ln2(self.l2(q1)))
+        q1 = self.l3(q1)
+        return q1
