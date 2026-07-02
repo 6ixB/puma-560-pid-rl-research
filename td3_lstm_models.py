@@ -38,7 +38,7 @@ class ReplayBuffer:
 # Algorithm 2 & 5: Temporal Observer Components
 # ============================================================================
 class LSTMTemporalObserver(nn.Module):
-    def __init__(self, input_dim=36, hidden_dim=256):
+    def __init__(self, input_dim=40, hidden_dim=256):
         super().__init__()
         self.lstm = nn.LSTM(input_dim, hidden_dim, batch_first=True)
         self.hidden_dim = hidden_dim
@@ -62,7 +62,7 @@ class LSTMTemporalObserver(nn.Module):
 # Algorithm 3: TD3 Actor and Critic
 # ============================================================================
 class TD3Actor(nn.Module):
-    def __init__(self, state_dim=298, action_dim=6):
+    def __init__(self, state_dim=302, action_dim=6):
         super().__init__()
         # Layer Normalization added to all hidden layers
         self.l1 = nn.Linear(state_dim, 256)
@@ -78,7 +78,7 @@ class TD3Actor(nn.Module):
         return torch.tanh(self.l3(x))
 
 class TD3Critic(nn.Module):
-    def __init__(self, state_dim=298, action_dim=6):
+    def __init__(self, state_dim=302, action_dim=6):
         super().__init__()
         # Q1 Architecture with LayerNorm
         self.l1 = nn.Linear(state_dim + action_dim, 256)

@@ -92,7 +92,7 @@ class LyapunovSafetyCage:
         if alpha_max < alpha:
             tau_safe = tau_safe * (alpha_max / (alpha + self.eps))
             
-        # 27: Apply torque limits
+        # 27: Apply torque limits to ensure mathematical bounds
         tau_safe = np.clip(tau_safe, -self.tau_max, self.tau_max)
         return tau_safe, V_t
 
@@ -100,12 +100,16 @@ class LyapunovSafetyCage:
 # Environment (Algorithm 2 Inner Loops)
 # ============================================================================
 class Puma560EnvTD3:
-    def __init__(self, dt=0.001, window_size=20, rl_decimation=20):
+    def __init__(self, dt=0.001, window_size=20, rl_decimation=20, trajectory=None, baseline_setting="A"):
         self.dt = dt 
         self.rl_decimation = rl_decimation 
         self.window_size = window_size
         self.params = PUMA560Params()
         self.robot = models.DH.Puma560()
+        
+        self.S = [] 
+        self.trajectory = trajectory
+        self.baseline_setting = baseline_setting
         
         # Setting A baseline
         Kp = np.diag([800.0, 1200.0, 800.0, 200.0, 200.0, 100.0])
@@ -119,11 +123,36 @@ class Puma560EnvTD3:
         self.t_total = 0.0
         
     def _get_reference(self, t):
+        if self.trajectory is not None:
+            # 1. Get position
+            q_ref = self.trajectory.get_setpoint(t)
+            
+            # 2. Compute velocity (Numerical Derivative)
+            eps = self.dt 
+            q_prev = self.trajectory.get_setpoint(t - eps)
+            qd_ref = (q_ref - q_prev) / eps
+            
+            # 3. Compute acceleration (Numerical Derivative)
+            q_prev2 = self.trajectory.get_setpoint(t - 2 * eps)
+            qd_prev = (q_prev - q_prev2) / eps
+            qdd_ref = (qd_ref - qd_prev) / eps
+            
+            return q_ref, qd_ref, qdd_ref
+            
         # Dual-tone training trajectory matching research defaults
         q_ref = 0.5 * np.sin(2*np.pi*0.5*t)*np.ones(6) + 0.2 * np.sin(2*np.pi*0.3*t)*np.ones(6)
         qd_ref = 0.5*np.pi*np.cos(np.pi*t)*np.ones(6) + 0.12*np.pi*np.cos(0.6*np.pi*t)*np.ones(6)
         qdd_ref = -0.5*(np.pi**2)*np.sin(np.pi*t)*np.ones(6) - 0.072*(np.pi**2)*np.sin(0.6*np.pi*t)*np.ones(6)
         return q_ref, qd_ref, qdd_ref
+
+    @property
+    def history(self):
+        return self.S
+
+    def step(self, action, episode=300):
+        # Standard interface for error_metrics_unified.py.
+        s_t, _, _, _ = self.execute_inner_loop(action)
+        return s_t, 0.0, False, False, {}
 
     def get_M(self):
         M = np.empty((6, 6))
@@ -134,6 +163,7 @@ class Puma560EnvTD3:
         return M
 
     def reset(self):
+        self.S.clear()
         self.q = np.zeros(6)
         self.qd = np.zeros(6)
         self.t_total = 0.0
@@ -162,8 +192,14 @@ class Puma560EnvTD3:
             self.qd += qdd * self.dt
             self.q = np.clip(self.q + self.qd * self.dt, self.params.q_limits[:,0], self.params.q_limits[:,1])
             
-        # Line 9: Build instantaneous state
-        s_t = np.concatenate([self.q, self.qd, e, ed, self.pid.e_int, qdd_ref])
+        # Line 9: Build instantaneous state WITH Phase Data
+        phase_data = np.array([
+            np.sin(2 * np.pi * 0.5 * self.t_total),
+            np.cos(2 * np.pi * 0.5 * self.t_total),
+            np.sin(2 * np.pi * 0.3 * self.t_total),
+            np.cos(2 * np.pi * 0.3 * self.t_total)
+        ])
+        s_t = np.concatenate([self.q, self.qd, e, ed, self.pid.e_int, qdd_ref, phase_data])
         
         # Line 10: Append and trim
         self.S.append(s_t)
@@ -172,17 +208,31 @@ class Puma560EnvTD3:
             
         return s_t, tau_pid, e, ed
 
-    def compute_reward(self, e_final, ed_final, tau_residual, tau_total):
-        # Normalized tracking reward to ensure stable gradients
-        # Weights derived from Inverse Baseline PID MSE to guarantee equal learning distribution
+    def compute_reward(self, e_final, tau_raw, tau_safe):
         weights = np.array([0.0725, 0.1059, 0.4290, 2.4099, 2.1500, 0.8327])
         w = weights / np.mean(weights)
         
-        r_track = -1.0 * np.sum(w * (e_final**2))
-        r_energy = -0.01 * np.sum((tau_residual/self.params.tau_max)**2) - 0.001 * np.sum((tau_total/self.params.tau_max)**2)
-        r_stab = 1.0 if np.max(np.abs(e_final)) < 0.01 else 0.0
+        # 1. Normalized Tracking Reward (Scaled down to prevent -20 pinning)
+        norm_e = e_final / 1.0 # Scale by 1 rad error
+        r_track = -1.0 * np.mean(w * (norm_e**2))
         
-        reward = float(np.clip(r_track + r_energy + r_stab, -20.0, 20.0))
+        # 2. Energy / Smoothness applied directly to RAW network output
+        norm_tau_raw = tau_raw / self.params.tau_max
+        r_energy = -0.05 * np.mean(norm_tau_raw**2)
+        
+        # 3. Penalize Safety Cage Exploitation (Gamma Penalty)
+        norm_diff = (tau_raw - tau_safe) / self.params.tau_max
+        gamma = 0.5 
+        r_cage = -gamma * np.mean(norm_diff**2)
+        
+        # 4. Stability Bonus
+        r_stab = 0.1 if np.max(np.abs(e_final)) < 0.01 else 0.0
+        
+        # Remove hard [-20, 20] clip to prevent gradient starvation
+        reward = float(r_track + r_energy + r_cage + r_stab)
+        
         truncated = np.max(np.abs(e_final)) > 3.0
-        if truncated: reward -= 20.0
+        if truncated: 
+            reward -= 5.0 # Less extreme penalty for failing early
+            
         return reward, truncated
